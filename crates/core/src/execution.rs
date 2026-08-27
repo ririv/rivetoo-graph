@@ -74,6 +74,30 @@ pub enum ExecutionNodeKind {
     Composite,
 }
 
+/// A resolved capability connection between two declaration nodes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityBinding {
+    source: NodeId,
+    target: NodeId,
+}
+
+impl CapabilityBinding {
+    #[must_use]
+    pub const fn new(source: NodeId, target: NodeId) -> Self {
+        Self { source, target }
+    }
+
+    #[must_use]
+    pub const fn source(self) -> NodeId {
+        self.source
+    }
+
+    #[must_use]
+    pub const fn target(self) -> NodeId {
+        self.target
+    }
+}
+
 /// Structural facts needed by the compiled scheduler.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionNode {
@@ -156,6 +180,8 @@ pub enum ExecutionGraphError {
         condition: ConditionId,
         read: NodeId,
     },
+    UnknownCapabilitySource(NodeId),
+    UnknownCapabilityTarget(NodeId),
     OwnershipCycle(Vec<NodeId>),
     DependencyCycle(Vec<NodeId>),
 }
@@ -192,6 +218,16 @@ impl Display for ExecutionGraphError {
                 "runtime condition {} reads unknown node {}",
                 condition.index(),
                 read.index()
+            ),
+            Self::UnknownCapabilitySource(node) => write!(
+                formatter,
+                "execution graph capability has unknown source {}",
+                node.index()
+            ),
+            Self::UnknownCapabilityTarget(node) => write!(
+                formatter,
+                "execution graph capability has unknown target {}",
+                node.index()
             ),
             Self::OwnershipCycle(cycle) => {
                 write_cycle(formatter, "execution graph has ownership cycle", cycle)
@@ -241,8 +277,24 @@ impl CompiledExecutionGraph {
         nodes: impl IntoIterator<Item = ExecutionNode>,
         conditions: impl IntoIterator<Item = RuntimeCondition>,
     ) -> Result<Self, ExecutionGraphError> {
-        let nodes = nodes.into_iter().collect::<Vec<_>>();
+        Self::lower(nodes, conditions, [])
+    }
+
+    /// Lowers resolved capability bindings into ordinary prerequisites, then
+    /// validates and indexes the resulting execution graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutionGraphError`] when a capability endpoint or another
+    /// structural reference is invalid, or when lowering introduces a cycle.
+    pub fn lower(
+        nodes: impl IntoIterator<Item = ExecutionNode>,
+        conditions: impl IntoIterator<Item = RuntimeCondition>,
+        capability_bindings: impl IntoIterator<Item = CapabilityBinding>,
+    ) -> Result<Self, ExecutionGraphError> {
+        let mut nodes = nodes.into_iter().collect::<Vec<_>>();
         let conditions = conditions.into_iter().collect::<Vec<_>>();
+        lower_capability_bindings(&mut nodes, capability_bindings)?;
         validate_condition_reads(nodes.len(), &conditions)?;
 
         let mut roots = Vec::new();
@@ -365,6 +417,29 @@ impl CompiledExecutionGraph {
     }
 }
 
+fn lower_capability_bindings(
+    nodes: &mut [ExecutionNode],
+    capability_bindings: impl IntoIterator<Item = CapabilityBinding>,
+) -> Result<(), ExecutionGraphError> {
+    for binding in capability_bindings {
+        if binding.source.index() >= nodes.len() {
+            return Err(ExecutionGraphError::UnknownCapabilitySource(binding.source));
+        }
+        let Some(target) = nodes.get_mut(binding.target.index()) else {
+            return Err(ExecutionGraphError::UnknownCapabilityTarget(binding.target));
+        };
+        if !target
+            .prerequisites
+            .contains(&Prerequisite::Required(binding.source))
+        {
+            target
+                .prerequisites
+                .push(Prerequisite::Required(binding.source));
+        }
+    }
+    Ok(())
+}
+
 fn validate_condition_reads(
     node_count: usize,
     conditions: &[RuntimeCondition],
@@ -427,8 +502,8 @@ fn validated_topology(node_count: usize, arcs: Vec<Arc>) -> DirectedTopology {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompiledExecutionGraph, ConditionId, ExecutionGraphError, ExecutionNode, ExecutionNodeKind,
-        Prerequisite, RuntimeCondition,
+        CapabilityBinding, CompiledExecutionGraph, ConditionId, ExecutionGraphError, ExecutionNode,
+        ExecutionNodeKind, Prerequisite, RuntimeCondition,
     };
     use crate::topology::NodeId;
 
@@ -518,5 +593,24 @@ mod tests {
                 node(0),
             ]))
         );
+    }
+
+    #[test]
+    fn graph_lowers_capability_binding_to_required_dependency() {
+        let graph = CompiledExecutionGraph::lower(
+            [
+                ExecutionNode::leaf(None, [], None),
+                ExecutionNode::leaf(None, [], None),
+            ],
+            [],
+            [CapabilityBinding::new(node(0), node(1))],
+        )
+        .unwrap();
+
+        assert_eq!(
+            graph.nodes()[1].prerequisites(),
+            [Prerequisite::Required(node(0))]
+        );
+        assert_eq!(graph.dependents(node(0)), Some([node(1)].as_slice()));
     }
 }

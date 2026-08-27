@@ -3,8 +3,9 @@
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rivetoo_graph::{
-    CompiledExecutionGraph as CoreCompiledExecutionGraph, CompiledScheduler, ConditionId,
-    ExecutionNode, NodeId, Prerequisite, RuntimeCondition, SchedulerError, SchedulerHost,
+    CapabilityBinding, CompiledExecutionGraph as CoreCompiledExecutionGraph, CompiledScheduler,
+    ConditionId, ExecutionNode, NodeId, Prerequisite, RuntimeCondition, SchedulerError,
+    SchedulerHost,
 };
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -32,6 +33,7 @@ impl NativeCompiledExecutionGraph {
         prerequisites: Vec<Vec<(usize, Option<usize>)>>,
         when_conditions: Vec<Option<usize>>,
         condition_reads: Vec<Vec<usize>>,
+        capability_bindings: Vec<(usize, usize)>,
     ) -> PyResult<Self> {
         let node_count = kinds.len();
         if owners.len() != node_count
@@ -70,7 +72,10 @@ impl NativeCompiledExecutionGraph {
         let conditions = condition_reads
             .into_iter()
             .map(|reads| RuntimeCondition::new(reads.into_iter().map(NodeId::new)));
-        let graph = CoreCompiledExecutionGraph::new(nodes, conditions)
+        let capability_bindings = capability_bindings.into_iter().map(|(source, target)| {
+            CapabilityBinding::new(NodeId::new(source), NodeId::new(target))
+        });
+        let graph = CoreCompiledExecutionGraph::lower(nodes, conditions, capability_bindings)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(Self {
             graph: Arc::new(graph),
@@ -93,6 +98,24 @@ impl NativeCompiledExecutionGraph {
             .dependents(NodeId::new(node))
             .map(node_indexes)
             .ok_or_else(|| PyValueError::new_err(format!("unknown execution node: {node}")))
+    }
+
+    fn all_prerequisites(&self) -> Vec<Vec<(usize, Option<usize>)>> {
+        self.graph
+            .nodes()
+            .iter()
+            .map(|node| {
+                node.prerequisites()
+                    .iter()
+                    .map(|prerequisite| {
+                        (
+                            prerequisite.node().index(),
+                            prerequisite.condition().map(ConditionId::index),
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     fn topological_order(&self) -> Vec<usize> {

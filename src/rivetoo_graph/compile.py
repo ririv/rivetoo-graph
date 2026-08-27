@@ -163,6 +163,7 @@ class GraphCompilation:
     steps: tuple[CompiledStep, ...]
     composites: tuple[CompiledComposite, ...]
     roots: tuple[CompiledNodeRef, ...]
+    capability_bindings: tuple[FrozenCapabilityBinding, ...] = ()
     _native_graph: NativeCompiledExecutionGraph = field(
         init=False,
         repr=False,
@@ -241,12 +242,40 @@ class GraphCompilation:
             node.id: index for index, node in enumerate(native_nodes)
         }
         try:
-            native_graph, native_conditions = _materialize_native_execution_graph(
-                native_nodes,
-                native_node_indexes,
+            native_graph, native_conditions, effective_after = (
+                _materialize_native_execution_graph(
+                    native_nodes,
+                    native_node_indexes,
+                    self.capability_bindings,
+                )
             )
         except ValueError as exc:
             raise GraphError(str(exc)) from exc
+
+        if any(
+            node.after != lowered_after
+            for node, lowered_after in zip(native_nodes, effective_after, strict=True)
+        ):
+            native_nodes = tuple(
+                replace(node, after=lowered_after)
+                for node, lowered_after in zip(
+                    native_nodes,
+                    effective_after,
+                    strict=True,
+                )
+            )
+            object.__setattr__(
+                self,
+                "steps",
+                tuple(node for node in native_nodes if isinstance(node, CompiledStep)),
+            )
+            object.__setattr__(
+                self,
+                "composites",
+                tuple(
+                    node for node in native_nodes if isinstance(node, CompiledComposite)
+                ),
+            )
 
         native_root_ids = {native_nodes[index].id for index in native_graph.roots()}
         if native_root_ids != expected_root_ids:
@@ -345,9 +374,11 @@ def _validate_compiled_condition(
 def _materialize_native_execution_graph(
     nodes: tuple[CompiledNode, ...],
     node_indexes: Mapping[StepId, int],
+    capability_bindings: tuple[FrozenCapabilityBinding, ...],
 ) -> tuple[
     NativeCompiledExecutionGraph,
     tuple[CompiledRuntimeCondition, ...],
+    tuple[tuple[CompiledPrerequisite, ...], ...],
 ]:
     """一次性把 Python 编译结构交给 Rust 建立执行索引。"""
 
@@ -386,15 +417,36 @@ def _materialize_native_execution_graph(
             None if node.when is None else register_condition(node.when)
         )
 
+    native_graph = NativeCompiledExecutionGraph(
+        kinds,
+        owners,
+        prerequisites,
+        when_conditions,
+        condition_reads,
+        [
+            (
+                node_indexes.get(binding.source, len(nodes)),
+                node_indexes.get(binding.target, len(nodes)),
+            )
+            for binding in capability_bindings
+        ],
+    )
+    effective_after = tuple(
+        tuple(
+            nodes[node_index].ref
+            if condition_index is None
+            else CompiledConditionalDependency(
+                node=nodes[node_index].ref,
+                condition=conditions[condition_index],
+            )
+            for node_index, condition_index in prerequisites
+        )
+        for prerequisites in native_graph.all_prerequisites()
+    )
     return (
-        NativeCompiledExecutionGraph(
-            kinds,
-            owners,
-            prerequisites,
-            when_conditions,
-            condition_reads,
-        ),
+        native_graph,
         tuple(conditions),
+        effective_after,
     )
 
 
@@ -425,7 +477,6 @@ def compile_graph(source_graph: Graph, *, root_label: str) -> GraphCompilation:
         graph_label_path=(),
         owner=None,
     )
-    fragment = _apply_capability_bindings(fragment)
     return GraphCompilation(
         source_graph=source_graph,
         source_frozen_graph=frozen_graph,
@@ -433,6 +484,7 @@ def compile_graph(source_graph: Graph, *, root_label: str) -> GraphCompilation:
         steps=fragment.steps,
         composites=fragment.composites,
         roots=fragment.roots,
+        capability_bindings=fragment.capability_bindings,
     )
 
 
@@ -542,54 +594,6 @@ def _compile_graph_fragment(
         composites=tuple(composites),
         roots=tuple(roots),
         capability_bindings=tuple(capability_bindings),
-    )
-
-
-def _apply_capability_bindings(
-    fragment: _CompiledGraphFragment,
-) -> _CompiledGraphFragment:
-    """把跨子图能力绑定 lower 为目标节点的普通编译依赖。"""
-
-    refs: dict[StepId, CompiledNodeRef] = {
-        node.id: node.ref for node in (*fragment.steps, *fragment.composites)
-    }
-    sources_by_target: dict[StepId, list[CompiledNodeRef]] = {}
-    for binding in fragment.capability_bindings:
-        source = refs.get(binding.source)
-        if source is None:
-            raise GraphError(
-                f"compiled capability '{binding.capability.name}' has unknown "
-                f"provider step: {binding.source}"
-            )
-        if binding.target not in refs:
-            raise GraphError(
-                f"compiled capability '{binding.capability.name}' has unknown "
-                f"consumer step: {binding.target}"
-            )
-        target_sources = sources_by_target.setdefault(binding.target, [])
-        if source not in target_sources:
-            target_sources.append(source)
-
-    def _with_capability_dependencies[NodeT: (CompiledStep, CompiledComposite)](
-        node: NodeT,
-    ) -> NodeT:
-        additional = tuple(
-            source
-            for source in sources_by_target.get(node.id, ())
-            if source not in node.after
-        )
-        if not additional:
-            return node
-        return replace(node, after=(*node.after, *additional))
-
-    return _CompiledGraphFragment(
-        steps=tuple(_with_capability_dependencies(step) for step in fragment.steps),
-        composites=tuple(
-            _with_capability_dependencies(composite)
-            for composite in fragment.composites
-        ),
-        roots=fragment.roots,
-        capability_bindings=fragment.capability_bindings,
     )
 
 

@@ -5,8 +5,8 @@ pub mod scheduler;
 pub mod topology;
 
 pub use execution::{
-    CompiledExecutionGraph, ConditionId, ExecutionGraphError, ExecutionNode, ExecutionNodeKind,
-    Prerequisite, RuntimeCondition,
+    CapabilityBinding, CompiledExecutionGraph, ConditionId, ExecutionGraphError, ExecutionNode,
+    ExecutionNodeKind, Prerequisite, RuntimeCondition,
 };
 pub use scheduler::{CompiledScheduler, NodeState, SchedulerError, SchedulerHost};
 pub use topology::{Arc, DagTopology, DirectedTopology, NodeId, TopologyError};

@@ -56,7 +56,7 @@ executor adapter crate
 
 ```text
 Python Graph
-    │ freeze 与层级 lowering
+    │ freeze 与层级结构收集
     ▼
 Python GraphCompilation 元数据
     │ 一次批量转换
@@ -66,6 +66,7 @@ Rust CompiledExecutionGraph
     ├── 组合 owner / children 索引
     ├── 条件 reads 与 prerequisite 索引
     ├── dependents 索引
+    ├── capability binding lowering
     └── DAG 校验
     │
     ▼
@@ -89,7 +90,9 @@ compiled graph，不能伪装成已经完成 Rust lowering 的节点。
 ## 唯一事实来源
 
 Rust 编译执行图只接受每个节点的 `owner`。roots 和 composite children 在构造时从
-owner 派生，不接受三套可能互相矛盾的层级声明。
+owner 派生，不接受三套可能互相矛盾的层级声明。冻结后的 capability binding 也作为
+独立结构输入交给 Rust，再由 Rust lower 为普通 prerequisite；Python 展示模型从 Rust
+的最终 prerequisite 恢复，不保留另一套改写规则。
 
 节点行为使用和类型区分：
 
@@ -136,7 +139,6 @@ Python 查询 adjacency
 
 - 静态条件求值与 freeze
 - 冻结层级图展开为编译元数据
-- capability binding lowering
 - Python action、结果对象、观察事件和宿主日志
 
 下一步优先迁移 freeze 后的结构 lowering。静态业务条件与 Python action 不进入 Rust
