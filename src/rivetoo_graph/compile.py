@@ -4,12 +4,13 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from ._native import NativeCompiledExecutionGraph, NativeNodeKind
+from ._native import NativeCompiledExecutionGraph
 from .errors import GraphError
 from .frozen import (
     FrozenCapabilityBinding,
     FrozenGraph,
     FrozenRuntimeCondition,
+    FrozenStep,
     RuntimeConditionalEdge,
     freeze_graph,
 )
@@ -391,17 +392,23 @@ def _materialize_native_execution_graph(
         conditions.append(condition)
         return condition_index
 
-    kinds: list[NativeNodeKind] = []
-    owners: list[int | None] = []
+    composite_indexes = tuple(
+        index for index, node in enumerate(nodes) if isinstance(node, CompiledComposite)
+    )
+    composite_child_graphs = {
+        index: graph_index
+        for graph_index, index in enumerate(composite_indexes, start=1)
+    }
+    graph_owners: list[int | None] = [None, *composite_indexes]
+    node_graphs: list[int] = []
     prerequisites: list[list[tuple[int, int | None]]] = []
     when_conditions: list[int | None] = []
     for node in nodes:
-        kinds.append(
-            NativeNodeKind.Leaf
-            if isinstance(node, CompiledStep)
-            else NativeNodeKind.Composite
+        node_graphs.append(
+            0
+            if node.owner is None
+            else composite_child_graphs[node_indexes[node.owner.id]]
         )
-        owners.append(None if node.owner is None else node_indexes[node.owner.id])
         prerequisites.append(
             [
                 (
@@ -418,8 +425,9 @@ def _materialize_native_execution_graph(
         )
 
     native_graph = NativeCompiledExecutionGraph(
-        kinds,
-        owners,
+        node_graphs,
+        list(composite_child_graphs.items()),
+        graph_owners,
         prerequisites,
         when_conditions,
         condition_reads,
@@ -451,78 +459,64 @@ def _materialize_native_execution_graph(
 
 
 @dataclass(frozen=True, slots=True)
-class _CompiledGraphFragment:
-    """递归编译一层冻结图产生的可组合片段。
+class _CollectedFrozenNode:
+    """Python collector 为一个冻结节点保留的不透明宿主元数据。
 
-    `steps` 与 `composites` 包含当前图及全部后代的扁平编译节点；
-    `roots` 只包含当前图直接声明的节点引用。父层据此填写
-    `CompiledComposite.children`，无需重新扫描扁平节点或推断层级。
-
-    片段不是可独立执行的图，也不重复保存依赖关系；它只用于递归编译时
-    汇集结果，最终由根片段一次性构造 `GraphCompilation`。
+    collector 不创建编译依赖，也不判断最终拓扑。`frozen_step` 中的结构引用
+    会在所有节点收齐后统一映射；action、observe 与声明作用域继续留在
+    Python，因为 Rust scheduler 不解释这些对象。
     """
 
-    steps: tuple[CompiledStep, ...]
-    composites: tuple[CompiledComposite, ...]
-    roots: tuple[CompiledNodeRef, ...]
-    capability_bindings: tuple[FrozenCapabilityBinding, ...]
+    frozen_step: FrozenStep
+    owner_id: StepId | None
+    context: CompiledStepContext
+
+
+@dataclass(slots=True)
+class _FrozenGraphCollection:
+    """一次遍历冻结层级图得到的宿主对象侧表。"""
+
+    nodes: list[_CollectedFrozenNode] = field(default_factory=list)
+    capability_bindings: list[FrozenCapabilityBinding] = field(default_factory=list)
 
 
 def compile_graph(source_graph: Graph, *, root_label: str) -> GraphCompilation:
-    """冻结声明图并把所有声明期已知子图展开为扁平执行计划。"""
+    """冻结声明图、收集宿主元数据，并一次提交结构 lowering。"""
 
     frozen_graph = freeze_graph(source_graph, root_label=root_label)
-    fragment = _compile_graph_fragment(
+    collection = _FrozenGraphCollection()
+    _collect_frozen_graph(
         frozen_graph,
+        collection=collection,
         graph_label_path=(),
-        owner=None,
+        owner_id=None,
     )
+    steps, composites, roots = _materialize_collected_nodes(collection.nodes)
     return GraphCompilation(
         source_graph=source_graph,
         source_frozen_graph=frozen_graph,
         label=frozen_graph.label,
-        steps=fragment.steps,
-        composites=fragment.composites,
-        roots=fragment.roots,
-        capability_bindings=fragment.capability_bindings,
+        steps=steps,
+        composites=composites,
+        roots=roots,
+        capability_bindings=tuple(collection.capability_bindings),
     )
 
 
-def _compile_graph_fragment(
+def _collect_frozen_graph(
     graph: FrozenGraph,
     *,
+    collection: _FrozenGraphCollection,
     graph_label_path: StepLabelPath,
-    owner: CompiledCompositeRef | None,
+    owner_id: StepId | None,
     ancestor_graph_scopes: tuple[GraphScope, ...] = (),
     ancestor_composite_ids: tuple[StepId, ...] = (),
-) -> _CompiledGraphFragment:
-    """递归展开冻结图，同时保留每个 graph-valued step 的组合记录。
-
-    当前图中的每个声明 step 都先获得 typed ref，随后才转换依赖和条件，
-    因而同层前向引用不依赖声明顺序。叶子变成 `CompiledStep`；子图自身
-    变成 `CompiledComposite`，其后代继续展开到同一份扁平节点集合。
-
-    `owner` 表示当前图由哪个 composite 持有；根图传入 `None`。当前层
-    产生的所有节点共享该 owner，而递归子图中的直接节点由对应的新
-    composite 持有。
-    """
+) -> None:
+    """只遍历冻结层级并收集 Python action、observe 与声明作用域。"""
 
     source_step_ids = {step.source_step: step.id for step in graph.steps}
-    step_refs: dict[StepId, CompiledNodeRef] = {}
+    collection.capability_bindings.extend(graph.capability_bindings)
     for step in graph.steps:
-        step_refs[step.id] = (
-            CompiledCompositeRef(step.id)
-            if isinstance(step.action, FrozenGraph)
-            else CompiledStepRef(step.id)
-        )
-
-    steps: list[CompiledStep] = []
-    composites: list[CompiledComposite] = []
-    roots: list[CompiledNodeRef] = []
-    capability_bindings = list(graph.capability_bindings)
-    for step in graph.steps:
-        ref = step_refs[step.id]
-        roots.append(ref)
         label_path = (*graph_label_path, step.label)
         context = CompiledStepContext(
             label_path=label_path,
@@ -531,106 +525,134 @@ def _compile_graph_fragment(
             ancestor_graph_scopes=ancestor_graph_scopes,
             ancestor_composite_ids=ancestor_composite_ids,
         )
-        after = tuple(
-            _compile_prerequisite(prerequisite, step_refs=step_refs)
-            for prerequisite in step.after
+        collection.nodes.append(
+            _CollectedFrozenNode(
+                frozen_step=step,
+                owner_id=owner_id,
+                context=context,
+            )
         )
-        when = (
-            None
-            if step.when is None
-            else _compile_runtime_condition(step.when, step_refs=step_refs)
-        )
-        action = step.action
-        if isinstance(action, FrozenGraph):
-            if not isinstance(ref, CompiledCompositeRef):
-                raise GraphError(f"compiled graph action has leaf ref: {step.id}")
-            child = _compile_graph_fragment(
-                action,
+        if isinstance(step.action, FrozenGraph):
+            _collect_frozen_graph(
+                step.action,
+                collection=collection,
                 graph_label_path=label_path,
-                owner=ref,
+                owner_id=step.id,
                 ancestor_graph_scopes=(
                     GraphScope(step_ids=source_step_ids),
                     *ancestor_graph_scopes,
                 ),
                 ancestor_composite_ids=(step.id, *ancestor_composite_ids),
             )
+
+
+def _materialize_collected_nodes(
+    collected: list[_CollectedFrozenNode],
+) -> tuple[
+    tuple[CompiledStep, ...],
+    tuple[CompiledComposite, ...],
+    tuple[CompiledNodeRef, ...],
+]:
+    """用全局身份表恢复 Python runtime 所需的不透明元数据包装。"""
+
+    refs: dict[StepId, CompiledNodeRef] = {}
+    for item in collected:
+        step = item.frozen_step
+        if step.id in refs:
+            raise GraphError(f"compiled graph has duplicate node id: {step.id}")
+        refs[step.id] = (
+            CompiledCompositeRef(step.id)
+            if isinstance(step.action, FrozenGraph)
+            else CompiledStepRef(step.id)
+        )
+
+    def require_ref(step_id: StepId) -> CompiledNodeRef:
+        ref = refs.get(step_id)
+        if ref is None:
+            raise GraphError(f"compiled graph references unknown node: {step_id}")
+        return ref
+
+    def materialize_condition(
+        condition: FrozenRuntimeCondition,
+    ) -> CompiledRuntimeCondition:
+        return CompiledRuntimeCondition(
+            when=condition.when,
+            reads=tuple(require_ref(step_id) for step_id in condition.reads),
+        )
+
+    def materialize_prerequisite(
+        prerequisite: StepId | RuntimeConditionalEdge,
+    ) -> CompiledPrerequisite:
+        if isinstance(prerequisite, RuntimeConditionalEdge):
+            return CompiledConditionalDependency(
+                node=require_ref(prerequisite.step_id),
+                condition=materialize_condition(prerequisite.condition),
+            )
+        return require_ref(prerequisite)
+
+    steps: list[CompiledStep] = []
+    composites: list[CompiledComposite] = []
+    roots: list[CompiledNodeRef] = []
+    for item in collected:
+        frozen_step = item.frozen_step
+        ref = require_ref(frozen_step.id)
+        owner = (
+            None
+            if item.owner_id is None
+            else _require_composite_ref(require_ref(item.owner_id))
+        )
+        if owner is None:
+            roots.append(ref)
+        after = tuple(
+            materialize_prerequisite(prerequisite) for prerequisite in frozen_step.after
+        )
+        when = (
+            None
+            if frozen_step.when is None
+            else materialize_condition(frozen_step.when)
+        )
+        if isinstance(frozen_step.action, FrozenGraph):
             composites.append(
                 CompiledComposite(
-                    ref=ref,
-                    source_graph=action.source_graph,
-                    graph_label=action.label,
-                    children=child.roots,
+                    ref=_require_composite_ref(ref),
+                    source_graph=frozen_step.action.source_graph,
+                    graph_label=frozen_step.action.label,
+                    children=tuple(
+                        require_ref(child.id) for child in frozen_step.action.steps
+                    ),
                     after=after,
                     when=when,
                     owner=owner,
-                    observe=action.observe,
-                    context=context,
+                    observe=frozen_step.action.observe,
+                    context=item.context,
                     graph_step_ids={
-                        child_step.source_step: child_step.id
-                        for child_step in action.steps
+                        child.source_step: child.id
+                        for child in frozen_step.action.steps
                     },
                 )
             )
-            steps.extend(child.steps)
-            composites.extend(child.composites)
-            capability_bindings.extend(child.capability_bindings)
             continue
-
         if not isinstance(ref, CompiledStepRef):
-            raise GraphError(f"compiled leaf action has composite ref: {step.id}")
+            raise GraphError(
+                f"compiled leaf action has composite ref: {frozen_step.id}"
+            )
         steps.append(
             CompiledStep(
                 ref=ref,
-                action=action,
+                action=frozen_step.action,
                 after=after,
                 when=when,
                 owner=owner,
-                context=context,
+                context=item.context,
             )
         )
 
-    return _CompiledGraphFragment(
-        steps=tuple(steps),
-        composites=tuple(composites),
-        roots=tuple(roots),
-        capability_bindings=tuple(capability_bindings),
-    )
+    return tuple(steps), tuple(composites), tuple(roots)
 
 
-def _compile_prerequisite(
-    prerequisite: StepId | RuntimeConditionalEdge,
-    *,
-    step_refs: dict[StepId, CompiledNodeRef],
-) -> CompiledPrerequisite:
-    """把声明层 prerequisite 映射为同层编译节点引用。
+def _require_composite_ref(ref: CompiledNodeRef) -> CompiledCompositeRef:
+    """要求结构引用指向 composite，避免用可选 mode 字段表达节点类别。"""
 
-    普通依赖只替换引用；条件边同时保留目标节点和运行期条件，不生成
-    额外的 gate step。
-    """
-
-    if isinstance(prerequisite, RuntimeConditionalEdge):
-        return CompiledConditionalDependency(
-            node=step_refs[prerequisite.step_id],
-            condition=_compile_runtime_condition(
-                prerequisite.condition,
-                step_refs=step_refs,
-            ),
-        )
-    return step_refs[prerequisite]
-
-
-def _compile_runtime_condition(
-    condition: FrozenRuntimeCondition,
-    *,
-    step_refs: dict[StepId, CompiledNodeRef],
-) -> CompiledRuntimeCondition:
-    """保留运行期 predicate，并把其结果读取映射为 typed ref。
-
-    predicate 仍由 runtime 求值；compile 只固定它读取的节点身份，
-    避免扁平化后再按局部字符串解析作用域。
-    """
-
-    return CompiledRuntimeCondition(
-        when=condition.when,
-        reads=tuple(step_refs[step_id] for step_id in condition.reads),
-    )
+    if not isinstance(ref, CompiledCompositeRef):
+        raise GraphError(f"compiled graph expected a composite ref: {ref.id}")
+    return ref

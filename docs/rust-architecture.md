@@ -62,8 +62,9 @@ Python GraphCompilation 元数据
     │ 一次批量转换
     ▼
 Rust CompiledExecutionGraph
-    ├── 连续 NodeId
-    ├── 组合 owner / children 索引
+    ├── 层级 ExecutionGraphDeclaration lowering
+    ├── 连续 NodeId / GraphId
+    ├── graph membership → owner / roots / children
     ├── 条件 reads 与 prerequisite 索引
     ├── dependents 索引
     ├── capability binding lowering
@@ -89,10 +90,17 @@ compiled graph，不能伪装成已经完成 Rust lowering 的节点。
 
 ## 唯一事实来源
 
-Rust 编译执行图只接受每个节点的 `owner`。roots 和 composite children 在构造时从
-owner 派生，不接受三套可能互相矛盾的层级声明。冻结后的 capability binding 也作为
-独立结构输入交给 Rust，再由 Rust lower 为普通 prerequisite；Python 展示模型从 Rust
-的最终 prerequisite 恢复，不保留另一套改写规则。
+Rust lowering 接受图作用域和节点成员关系，而不是同时接受 `owner`、roots 和 children：
+
+- graph scope 使用 `Root | OwnedBy(NodeId)` 表达互斥状态
+- node 使用 `Leaf | Composite { child_graph }` 表达互斥行为
+- 每个 node 只声明自己属于哪个 `GraphId`
+
+Rust 会校验 composite 与 child graph 的双向关系，再从 graph membership 派生 node
+owner；roots 和 composite children 最终只从 owner 建立。这样层级关系不会出现三套可
+互相矛盾的声明。冻结后的 capability binding 也作为独立结构输入交给 Rust，再由 Rust
+lower 为普通 prerequisite；Python 展示模型从 Rust 的最终 prerequisite 恢复，不保留
+另一套改写规则。
 
 节点行为使用和类型区分：
 
@@ -138,8 +146,9 @@ Python 查询 adjacency
 当前仍在 Python 的 compiled 路径内容包括：
 
 - 静态条件求值与 freeze
-- 冻结层级图展开为编译元数据
+- 遍历冻结对象并保留 action、predicate、observe 与声明作用域侧表
 - Python action、结果对象、观察事件和宿主日志
 
-下一步优先迁移 freeze 后的结构 lowering。静态业务条件与 Python action 不进入 Rust
-core；只有稳定、纯结构且能批量跨边界的数据适合下沉。
+冻结后的层级结构与 capability lowering 已进入 Rust。后续继续缩小 Python collector
+时，静态业务条件与 Python action 仍不进入 Rust core；只有稳定、纯结构且能批量跨
+边界的数据适合下沉。

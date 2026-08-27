@@ -4,19 +4,12 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rivetoo_graph::{
     CapabilityBinding, CompiledExecutionGraph as CoreCompiledExecutionGraph, CompiledScheduler,
-    ConditionId, ExecutionNode, NodeId, Prerequisite, RuntimeCondition, SchedulerError,
-    SchedulerHost,
+    ConditionId, DeclaredGraph, DeclaredNode, ExecutionGraphDeclaration, GraphId, NodeId,
+    Prerequisite, RuntimeCondition, SchedulerError, SchedulerHost,
 };
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-
-/// Node behavior accepted by the private Python adapter.
-#[pyclass(eq, eq_int, from_py_object, module = "rivetoo_graph._native")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NativeNodeKind {
-    Leaf,
-    Composite,
-}
 
 /// Rust-owned structural execution graph.
 #[pyclass(frozen, module = "rivetoo_graph._native")]
@@ -28,30 +21,41 @@ struct NativeCompiledExecutionGraph {
 impl NativeCompiledExecutionGraph {
     #[new]
     fn new(
-        kinds: Vec<NativeNodeKind>,
-        owners: Vec<Option<usize>>,
+        node_graphs: Vec<usize>,
+        composite_child_graphs: Vec<(usize, usize)>,
+        graph_owners: Vec<Option<usize>>,
         prerequisites: Vec<Vec<(usize, Option<usize>)>>,
         when_conditions: Vec<Option<usize>>,
         condition_reads: Vec<Vec<usize>>,
         capability_bindings: Vec<(usize, usize)>,
     ) -> PyResult<Self> {
-        let node_count = kinds.len();
-        if owners.len() != node_count
-            || prerequisites.len() != node_count
-            || when_conditions.len() != node_count
-        {
+        let node_count = node_graphs.len();
+        if prerequisites.len() != node_count || when_conditions.len() != node_count {
             return Err(PyValueError::new_err(
                 "compiled execution graph node columns have different lengths",
             ));
         }
 
-        let nodes = kinds
+        let mut child_graphs = HashMap::new();
+        for (node, child_graph) in composite_child_graphs {
+            if node >= node_count {
+                return Err(PyValueError::new_err(format!(
+                    "execution declaration has unknown composite node: {node}"
+                )));
+            }
+            if child_graphs.insert(node, child_graph).is_some() {
+                return Err(PyValueError::new_err(format!(
+                    "execution declaration repeats composite node: {node}"
+                )));
+            }
+        }
+
+        let nodes = node_graphs
             .into_iter()
-            .zip(owners)
             .zip(prerequisites)
             .zip(when_conditions)
-            .map(|(((kind, owner), prerequisites), when)| {
-                let owner = owner.map(NodeId::new);
+            .enumerate()
+            .map(|(index, ((graph, prerequisites), when))| {
                 let prerequisites = prerequisites.into_iter().map(|(node, condition)| {
                     condition.map_or_else(
                         || Prerequisite::Required(NodeId::new(node)),
@@ -62,20 +66,29 @@ impl NativeCompiledExecutionGraph {
                     )
                 });
                 let when = when.map(ConditionId::new);
-                match kind {
-                    NativeNodeKind::Leaf => ExecutionNode::leaf(owner, prerequisites, when),
-                    NativeNodeKind::Composite => {
-                        ExecutionNode::composite(owner, prerequisites, when)
-                    }
+                match child_graphs.get(&index) {
+                    None => DeclaredNode::leaf(GraphId::new(graph), prerequisites, when),
+                    Some(child_graph) => DeclaredNode::composite(
+                        GraphId::new(graph),
+                        GraphId::new(*child_graph),
+                        prerequisites,
+                        when,
+                    ),
                 }
             });
+        let graphs = graph_owners.into_iter().map(|owner| {
+            owner.map_or(DeclaredGraph::Root, |owner| {
+                DeclaredGraph::OwnedBy(NodeId::new(owner))
+            })
+        });
         let conditions = condition_reads
             .into_iter()
             .map(|reads| RuntimeCondition::new(reads.into_iter().map(NodeId::new)));
         let capability_bindings = capability_bindings.into_iter().map(|(source, target)| {
             CapabilityBinding::new(NodeId::new(source), NodeId::new(target))
         });
-        let graph = CoreCompiledExecutionGraph::lower(nodes, conditions, capability_bindings)
+        let graph = ExecutionGraphDeclaration::new(graphs, nodes, conditions, capability_bindings)
+            .lower()
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(Self {
             graph: Arc::new(graph),
@@ -402,7 +415,6 @@ impl SchedulerHost for OwnedPythonSchedulerHost<'_> {
 #[pymodule]
 #[allow(clippy::unnecessary_wraps)]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<NativeNodeKind>()?;
     module.add_class::<NativeCompiledExecutionGraph>()?;
     Ok(())
 }

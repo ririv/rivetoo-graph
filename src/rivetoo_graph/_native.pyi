@@ -1,4 +1,4 @@
-from typing import ClassVar, Protocol, Self
+from typing import Protocol
 
 class NativeSchedulerHost(Protocol):
     def is_skipped(self, node: int) -> bool: ...
@@ -12,15 +12,12 @@ class NativeSchedulerHost(Protocol):
     def request_stop(self) -> None: ...
     def require_running(self) -> None: ...
 
-class NativeNodeKind:
-    Leaf: ClassVar[Self]
-    Composite: ClassVar[Self]
-
 class NativeCompiledExecutionGraph:
     def __init__(
         self,
-        kinds: list[NativeNodeKind],
-        owners: list[int | None],
+        node_graphs: list[int],
+        composite_child_graphs: list[tuple[int, int]],
+        graph_owners: list[int | None],
         prerequisites: list[list[tuple[int, int | None]]],
         when_conditions: list[int | None],
         condition_reads: list[list[int]],
