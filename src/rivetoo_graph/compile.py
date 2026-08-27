@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from ._native import NativeCompiledExecutionGraph, NativeNodeKind
 from .errors import GraphError
 from .frozen import (
     FrozenCapabilityBinding,
@@ -12,7 +14,6 @@ from .frozen import (
     freeze_graph,
 )
 from .results import GraphScope
-from .topology import Arc, DAGTopology, DirectedTopology, TopologyCycleError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -162,6 +163,26 @@ class GraphCompilation:
     steps: tuple[CompiledStep, ...]
     composites: tuple[CompiledComposite, ...]
     roots: tuple[CompiledNodeRef, ...]
+    _native_graph: NativeCompiledExecutionGraph = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _native_nodes: tuple[CompiledNode, ...] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _native_node_indexes: Mapping[StepId, int] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _native_conditions: tuple[CompiledRuntimeCondition, ...] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def observe(self) -> GraphObserve:
@@ -215,19 +236,54 @@ class GraphCompilation:
                     f"{composite.id}"
                 )
 
-        topology = DirectedTopology(
-            nodes=tuple(nodes),
-            arcs=tuple(
-                Arc(source=dependency, target=node.id)
-                for node in nodes.values()
-                for dependency in _compiled_node_dependency_ids(node)
-            ),
-        )
+        native_nodes = tuple(nodes.values())
+        native_node_indexes = {
+            node.id: index for index, node in enumerate(native_nodes)
+        }
         try:
-            DAGTopology(topology)
-        except TopologyCycleError as exc:
-            cycle = " -> ".join(str(item) for item in exc.cycle)
-            raise GraphError(f"compiled graph has dependency cycle: {cycle}") from exc
+            native_graph, native_conditions = _materialize_native_execution_graph(
+                native_nodes,
+                native_node_indexes,
+            )
+        except ValueError as exc:
+            raise GraphError(str(exc)) from exc
+
+        native_root_ids = {native_nodes[index].id for index in native_graph.roots()}
+        if native_root_ids != expected_root_ids:
+            raise GraphError("compiled graph native roots do not match ownerless nodes")
+        for composite in self.composites:
+            composite_index = native_node_indexes[composite.id]
+            native_child_ids = {
+                native_nodes[index].id
+                for index in native_graph.children(composite_index)
+            }
+            if native_child_ids != {child.id for child in composite.children}:
+                raise GraphError(
+                    "compiled graph native children do not match composite: "
+                    f"{composite.id}"
+                )
+
+        object.__setattr__(self, "_native_graph", native_graph)
+        object.__setattr__(self, "_native_nodes", native_nodes)
+        object.__setattr__(self, "_native_conditions", native_conditions)
+        object.__setattr__(
+            self,
+            "_native_node_indexes",
+            MappingProxyType(native_node_indexes),
+        )
+
+    def _dependent_refs(self, node_id: StepId) -> tuple[CompiledNodeRef, ...]:
+        node_index = self._native_node_indexes[node_id]
+        return tuple(
+            self._native_nodes[index].ref
+            for index in self._native_graph.dependents(node_index)
+        )
+
+    def _native_node(self, index: int) -> CompiledNode:
+        return self._native_nodes[index]
+
+    def _native_condition(self, index: int) -> CompiledRuntimeCondition:
+        return self._native_conditions[index]
 
 
 def _require_compiled_node(
@@ -286,17 +342,60 @@ def _validate_compiled_condition(
         _require_compiled_node(nodes, read)
 
 
-def _compiled_node_dependency_ids(node: CompiledNode) -> set[StepId]:
-    """收集最终编译节点用于保守环检测的全部阻塞关系。"""
+def _materialize_native_execution_graph(
+    nodes: tuple[CompiledNode, ...],
+    node_indexes: Mapping[StepId, int],
+) -> tuple[
+    NativeCompiledExecutionGraph,
+    tuple[CompiledRuntimeCondition, ...],
+]:
+    """一次性把 Python 编译结构交给 Rust 建立执行索引。"""
 
-    dependency_ids: set[StepId] = set()
-    for prerequisite in node.after:
-        dependency_ids.add(compiled_prerequisite_node(prerequisite).id)
-        if isinstance(prerequisite, CompiledConditionalDependency):
-            dependency_ids.update(ref.id for ref in prerequisite.condition.reads)
-    if node.when is not None:
-        dependency_ids.update(ref.id for ref in node.when.reads)
-    return dependency_ids
+    condition_reads: list[list[int]] = []
+    conditions: list[CompiledRuntimeCondition] = []
+
+    def register_condition(condition: CompiledRuntimeCondition) -> int:
+        condition_index = len(condition_reads)
+        condition_reads.append([node_indexes[read.id] for read in condition.reads])
+        conditions.append(condition)
+        return condition_index
+
+    kinds: list[NativeNodeKind] = []
+    owners: list[int | None] = []
+    prerequisites: list[list[tuple[int, int | None]]] = []
+    when_conditions: list[int | None] = []
+    for node in nodes:
+        kinds.append(
+            NativeNodeKind.Leaf
+            if isinstance(node, CompiledStep)
+            else NativeNodeKind.Composite
+        )
+        owners.append(None if node.owner is None else node_indexes[node.owner.id])
+        prerequisites.append(
+            [
+                (
+                    node_indexes[compiled_prerequisite_node(prerequisite).id],
+                    register_condition(prerequisite.condition)
+                    if isinstance(prerequisite, CompiledConditionalDependency)
+                    else None,
+                )
+                for prerequisite in node.after
+            ]
+        )
+        when_conditions.append(
+            None if node.when is None else register_condition(node.when)
+        )
+
+    return (
+        NativeCompiledExecutionGraph(
+            kinds,
+            owners,
+            prerequisites,
+            when_conditions,
+            condition_reads,
+        ),
+        tuple(conditions),
+    )
 
 
 @dataclass(frozen=True, slots=True)

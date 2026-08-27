@@ -12,7 +12,7 @@ from .action_log import (
     NO_GRAPH_ACTION_LOG,
     GraphActionLog,
 )
-from .compiled import CompiledScheduler
+from .compiled import NativeCompiledSchedulerHost
 from .dynamic import (
     DynamicConditionCache,
     DynamicStepState,
@@ -90,23 +90,16 @@ class SerialGraphExecutor:
             label_path=(),
             phase=GraphObservationPhase.BEFORE,
         )
-        scheduler = CompiledScheduler(
+        scheduler_host = NativeCompiledSchedulerHost(
             compilation,
             self.state,
             observer=self.observer,
+            run_leaf=lambda step: self._execute_compiled_step(run, step),
         )
-        scheduler.start()
-        while not scheduler.is_finished:
-            step = scheduler.take_ready_step()
-            if step is None:
-                scheduler.require_finished()
-                break
-            self._execute_compiled_step(
-                run,
-                step,
-            )
-            scheduler.complete_step(step)
-        scheduler.require_finished()
+        try:
+            compilation._native_graph.run_serial(scheduler_host)
+        except ValueError as exc:
+            raise GraphError(str(exc)) from exc
         emit_graph_observation(
             observer=self.observer,
             state=self.state,

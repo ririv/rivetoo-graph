@@ -1,0 +1,12 @@
+[package]
+name = "rivetoo-graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "rivetoo_graph"
+
+[lints]
+workspace = true

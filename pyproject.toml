@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=80"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
 
 [project]
 name = "rivetoo-graph"
@@ -17,14 +17,10 @@ dev = [
     "ruff>=0.14.14",
 ]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-rivetoo_graph = ["py.typed"]
+[tool.maturin]
+manifest-path = "crates/python/Cargo.toml"
+module-name = "rivetoo_graph._native"
+python-source = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

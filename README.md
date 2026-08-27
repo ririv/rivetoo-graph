@@ -11,4 +11,14 @@ Python 导入入口为：
 from rivetoo_graph import Graph, GraphPlan, Step
 ```
 
+当前 `main` 分支正在把编译执行图迁移到 Rust；迁移前的纯 Python 基线保留在
+`python` 分支。Rust 架构与迁移边界见
+[Rust 架构](./docs/rust-architecture.md)。
+
+本地开发需要先把原生模块安装到当前 Python 环境：
+
+```bash
+maturin develop
+```
+
 完整的模型、组合与执行说明见 [Graph 文档](./docs/index.md)。

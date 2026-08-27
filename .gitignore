@@ -5,3 +5,6 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+target/
+src/rivetoo_graph/_native*.so
+src/rivetoo_graph/_native*.pyd

@@ -6,7 +6,7 @@ import threading
 import traceback
 from typing import TYPE_CHECKING
 
-from ..compile import CompiledStep, GraphCompilation
+from ..compile import GraphCompilation
 from ..errors import GraphError
 from ..frozen import FrozenGraph
 from ..observe import GraphObservationPhase, GraphObserver
@@ -14,7 +14,7 @@ from .action_log import (
     NO_GRAPH_ACTION_LOG,
     GraphActionLog,
 )
-from .compiled import CompiledScheduler
+from .compiled import NativeCompiledSchedulerHost
 from .dynamic import (
     DynamicConditionCache,
     DynamicStepState,
@@ -102,74 +102,24 @@ class ParallelGraphExecutor:
             label_path=(),
             phase=GraphObservationPhase.BEFORE,
         )
-        scheduler = CompiledScheduler(
+        scheduler_host = NativeCompiledSchedulerHost(
             compilation,
             self.state,
             observer=self.observer,
+            execution_control=self.execution_control,
+            run_leaf=lambda step: self._run_step(
+                run,
+                step,
+                step.context.label_path,
+                workers,
+                step.context.graph_step_ids,
+                step.context.ancestor_graph_scopes,
+            ),
         )
-        scheduler.start()
-        failure: BaseException | None = None
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="GraphWorker",
-        ) as executor:
-            futures: dict[
-                concurrent.futures.Future[None],
-                CompiledStep,
-            ] = {}
-            while not scheduler.is_finished or futures:
-                while (
-                    failure is None
-                    and not self.execution_control.stop_requested()
-                    and len(futures) < workers
-                ):
-                    step = scheduler.take_ready_step()
-                    if step is None:
-                        break
-                    logger.debug(
-                        "Graph submit: step=%s inflight=%d workers=%d",
-                        ".".join(step.context.label_path),
-                        len(futures),
-                        workers,
-                    )
-                    futures[
-                        executor.submit(
-                            self._run_step,
-                            run,
-                            step,
-                            step.context.label_path,
-                            workers,
-                            step.context.graph_step_ids,
-                            step.context.ancestor_graph_scopes,
-                        )
-                    ] = step
-
-                if not futures:
-                    if failure is not None or self.execution_control.stop_requested():
-                        break
-                    scheduler.require_finished()
-                    break
-
-                done, _ = concurrent.futures.wait(
-                    futures,
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
-                for future in done:
-                    step = futures.pop(future)
-                    try:
-                        future.result()
-                    except BaseException as exc:
-                        if failure is None:
-                            failure = exc
-                            self.execution_control.request_stop()
-                    else:
-                        if failure is None:
-                            scheduler.complete_step(step)
-
-        if failure is not None:
-            raise failure
-        self.execution_control.require_running()
-        scheduler.require_finished()
+        try:
+            compilation._native_graph.run_threaded(scheduler_host, workers)
+        except ValueError as exc:
+            raise GraphError(str(exc)) from exc
         emit_graph_observation(
             observer=self.observer,
             state=self.state,

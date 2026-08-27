@@ -4,7 +4,7 @@ import asyncio
 import inspect
 from typing import TYPE_CHECKING, cast
 
-from ..compile import CompiledStep, GraphCompilation
+from ..compile import GraphCompilation
 from ..errors import GraphError
 from ..frozen import FrozenGraph
 from ..observe import GraphObservationPhase, GraphObserver
@@ -12,7 +12,7 @@ from .action_log import (
     NO_GRAPH_ACTION_LOG,
     GraphActionLog,
 )
-from .compiled import CompiledScheduler
+from .compiled import NativeCompiledSchedulerHost
 from .dynamic import (
     DynamicConditionCache,
     DynamicStepState,
@@ -40,6 +40,7 @@ from .state import GraphExecutionState
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
 
+    from ..compile import CompiledStep
     from ..model import LeafAction, Step, StepId, StepLabelPath
     from ..results import GraphScope, StepRunContext
     from .control import GraphExecutionControl
@@ -134,61 +135,37 @@ class AsyncGraphExecutor:
             label_path=(),
             phase=GraphObservationPhase.BEFORE,
         )
-        scheduler = CompiledScheduler(
+        loop = asyncio.get_running_loop()
+
+        def _run_leaf(step: CompiledStep) -> None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._run_step(
+                    run,
+                    step,
+                    step.context.label_path,
+                    concurrency,
+                    step.context.graph_step_ids,
+                    step.context.ancestor_graph_scopes,
+                ),
+                loop,
+            )
+            future.result()
+
+        scheduler_host = NativeCompiledSchedulerHost(
             compilation,
             self.state,
             observer=self.observer,
+            execution_control=self.execution_control,
+            run_leaf=_run_leaf,
         )
-        scheduler.start()
-        failure: BaseException | None = None
-        tasks: dict[asyncio.Task[None], CompiledStep] = {}
-        while not scheduler.is_finished or tasks:
-            while (
-                failure is None
-                and not self.execution_control.stop_requested()
-                and len(tasks) < concurrency
-            ):
-                step = scheduler.take_ready_step()
-                if step is None:
-                    break
-                task = asyncio.create_task(
-                    self._run_step(
-                        run,
-                        step,
-                        step.context.label_path,
-                        concurrency,
-                        step.context.graph_step_ids,
-                        step.context.ancestor_graph_scopes,
-                    )
-                )
-                tasks[task] = step
-
-            if not tasks:
-                if failure is not None or self.execution_control.stop_requested():
-                    break
-                scheduler.require_finished()
-                break
-
-            done, _ = await asyncio.wait(
-                tasks,
-                return_when=asyncio.FIRST_COMPLETED,
+        try:
+            await asyncio.to_thread(
+                compilation._native_graph.run_threaded,
+                scheduler_host,
+                concurrency,
             )
-            for task in done:
-                step = tasks.pop(task)
-                try:
-                    await task
-                except BaseException as exc:
-                    if failure is None:
-                        failure = exc
-                        self.execution_control.request_stop()
-                else:
-                    if failure is None:
-                        scheduler.complete_step(step)
-
-        if failure is not None:
-            raise failure
-        self.execution_control.require_running()
-        scheduler.require_finished()
+        except ValueError as exc:
+            raise GraphError(str(exc)) from exc
         emit_graph_observation(
             observer=self.observer,
             state=self.state,

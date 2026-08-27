@@ -34,6 +34,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - [条件边](./conditional_edges.md)
 - [条件 Step](./conditional_steps.md)
 - [能力依赖与子图端口](./capabilities.md)
+- [Rust 架构与迁移边界](./rust-architecture.md)
 
 ## 核心边界
 
