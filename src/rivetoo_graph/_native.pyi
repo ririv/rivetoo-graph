@@ -12,6 +12,19 @@ class NativeSchedulerHost(Protocol):
     def request_stop(self) -> None: ...
     def require_running(self) -> None: ...
 
+def dag_cycle(
+    node_count: int,
+    arcs: list[tuple[int, int]],
+) -> list[int] | None: ...
+
+def resolve_capability_bindings(
+    component_outputs: list[list[int]],
+    requirement_count: int,
+    any_requirements: list[tuple[int, int, int]],
+    exact_requirements: list[tuple[int, int, int, int]],
+    selections: list[tuple[int, int]],
+) -> list[tuple[int, int, int]]: ...
+
 class NativeCompiledExecutionGraph:
     def __init__(
         self,

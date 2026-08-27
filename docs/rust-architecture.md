@@ -52,7 +52,7 @@ executor adapter crate
 
 ## 当前执行边界
 
-当前 compiled 路径为：
+当前 compiled 与 dynamic 路径共享同一个 Rust scheduler：
 
 ```text
 Python Graph
@@ -67,6 +67,7 @@ Rust CompiledExecutionGraph
     ├── graph membership → owner / roots / children
     ├── 条件 reads 与 prerequisite 索引
     ├── dependents 索引
+    ├── capability provider 解析与歧义校验
     ├── capability binding lowering
     └── DAG 校验
     │
@@ -85,8 +86,10 @@ Python 不再调用 `take_ready`、`complete` 等细粒度原生方法。每次 
 - 记录组合生命周期和观察事件
 - 读取或写入宿主停止控制
 
-动态 action 返回的运行期子图仍按 Python dynamic runtime 执行。它不属于声明期已知的
-compiled graph，不能伪装成已经完成 Rust lowering 的节点。
+dynamic 路径不会展开子图边界。每层 `FrozenGraph` 会批量物化成一个浅层 Rust 调度图；
+图 action 作为该层 leaf 由 Python 回调递归进入下一层，下一层再独立进入 Rust scheduler。
+因此运行期返回的图不需要伪装成声明期 compiled 节点，但 ready 队列、条件缓存、依赖
+刷新和串行/线程协调都不再由 Python 实现。
 
 ## 唯一事实来源
 
@@ -141,14 +144,20 @@ Python 查询 adjacency
 时恢复领域对象。依赖边条件在迁移前仍由 Python 求值，不需要为了复用拓扑而把平台领域
 模型塞进 core。
 
-## 待迁移内容
+## 保留的宿主边界
 
-当前仍在 Python 的 compiled 路径内容包括：
+能力声明先由 Python adapter 验证端口对象确实属于对应子图，再把 component、capability、
+requirement 与 selection 映射成连续整数 ID。provider 索引、任意 provider 的唯一性、
+显式 provider 选择、重复与混合 requirement 校验均在 Rust 中一次完成；Python 不保留
+第二套 provider 求解规则。
 
-- 静态条件求值与 freeze
-- 遍历冻结对象并保留 action、predicate、observe 与声明作用域侧表
-- Python action、结果对象、观察事件和宿主日志
+当前仍留在 Python 的内容都是宿主边界，而不是另一套执行图算法：
 
-冻结后的层级结构与 capability lowering 已进入 Rust。后续继续缩小 Python collector
-时，静态业务条件与 Python action 仍不进入 Rust core；只有稳定、纯结构且能批量跨
-边界的数据适合下沉。
+- 静态条件叶子和运行时条件 predicate 是 Python callable
+- action、结果对象、observe、日志路径和展示 label 是 Python 对象
+- freeze 负责求值静态业务条件，并建立这些对象到稳定整数 ID 的侧表
+- `GraphExecutionState` 保存可供 Python action 动态写入的 skip、结果与渲染快照
+
+ready 队列、节点状态机、条件阻塞、层级生命周期、执行 DAG 校验、capability provider
+求解与 binding lowering 均只有 Rust 一份实现。继续把上述宿主对象包装成原生对象只会
+增加逐对象 FFI，不属于执行图核心迁移。

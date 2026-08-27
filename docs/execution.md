@@ -10,7 +10,8 @@
     - 只消掉 `StaticCondition`
     - `RuntimeCondition` 继续保留给 runtime
   - 将结果实例化为 `FrozenGraph`
-  - runtime 遇到 `FrozenStep.action is FrozenGraph` 时递归执行
+  - 每层 `FrozenGraph` 批量交给 Rust scheduler
+  - runtime 遇到 `FrozenStep.action is FrozenGraph` 时保持边界并递归进入下一层 Rust 调度
 - compiled
   - `GraphPlan.compile()`
   - `GraphPlan.run(mode="compiled")`
@@ -21,6 +22,10 @@
   - `GraphCompilation.composites` 在协调线程维护组合进入、完成、条件和 observation
 
 两条路径并存，当前没有删除 dynamic runtime 的计划。
+
+两条路径的结构边界不同，但不再维护两套调度状态机：compiled 把声明期子图扁平化后
+一次调度；dynamic 按层物化浅图。二者的 ready、condition、skip、complete 和并发协调
+均由同一个 Rust `CompiledScheduler` 负责。
 
 runtime 当前的模式判定也已经显式化：
 

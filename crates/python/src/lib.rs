@@ -3,9 +3,11 @@
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rivetoo_graph::{
-    CapabilityBinding, CompiledExecutionGraph as CoreCompiledExecutionGraph, CompiledScheduler,
-    ConditionId, DeclaredGraph, DeclaredNode, ExecutionGraphDeclaration, GraphId, NodeId,
-    Prerequisite, RuntimeCondition, SchedulerError, SchedulerHost,
+    Arc as TopologyArc, CapabilityBinding, CapabilityId, CapabilityRequirement,
+    CompiledExecutionGraph as CoreCompiledExecutionGraph, CompiledScheduler, ComponentId,
+    ConditionId, DagTopology, DeclaredGraph, DeclaredNode, DirectedTopology,
+    ExecutionGraphDeclaration, GraphId, NodeId, Prerequisite, ProviderSelection, RequirementId,
+    RuntimeCondition, SchedulerError, SchedulerHost, TopologyError, resolve_capabilities,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
@@ -15,6 +17,108 @@ use std::thread;
 #[pyclass(frozen, module = "rivetoo_graph._native")]
 struct NativeCompiledExecutionGraph {
     graph: Arc<CoreCompiledExecutionGraph>,
+}
+
+/// Validates one complete DAG projection and returns its cycle when present.
+#[pyfunction]
+fn dag_cycle(node_count: usize, arcs: Vec<(usize, usize)>) -> PyResult<Option<Vec<usize>>> {
+    let arcs = arcs
+        .into_iter()
+        .map(|(source, target)| TopologyArc::new(NodeId::new(source), NodeId::new(target)));
+    let topology = DirectedTopology::new(node_count, arcs)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    match DagTopology::new(topology) {
+        Ok(_) => Ok(None),
+        Err(TopologyError::Cycle(cycle)) => Ok(Some(node_indexes(&cycle))),
+        Err(error) => Err(PyValueError::new_err(error.to_string())),
+    }
+}
+
+/// Resolves one complete execution-graph capability declaration in Rust.
+#[pyfunction]
+fn resolve_capability_bindings(
+    component_outputs: Vec<Vec<usize>>,
+    requirement_count: usize,
+    any_requirements: Vec<(usize, usize, usize)>,
+    exact_requirements: Vec<(usize, usize, usize, usize)>,
+    selections: Vec<(usize, usize)>,
+) -> PyResult<Vec<(usize, usize, usize)>> {
+    let mut requirements = vec![None; requirement_count];
+    for (requirement, consumer, capability) in any_requirements {
+        set_requirement(
+            &mut requirements,
+            requirement,
+            CapabilityRequirement::Any {
+                consumer: ComponentId::new(consumer),
+                capability: CapabilityId::new(capability),
+            },
+        )?;
+    }
+    for (requirement, consumer, capability, provider) in exact_requirements {
+        set_requirement(
+            &mut requirements,
+            requirement,
+            CapabilityRequirement::Exact {
+                consumer: ComponentId::new(consumer),
+                capability: CapabilityId::new(capability),
+                provider: ComponentId::new(provider),
+            },
+        )?;
+    }
+    let requirements = requirements
+        .into_iter()
+        .enumerate()
+        .map(|(index, requirement)| {
+            requirement.ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "capability requirement declaration is missing index {index}"
+                ))
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let component_outputs = component_outputs
+        .into_iter()
+        .map(|outputs| outputs.into_iter().map(CapabilityId::new).collect())
+        .collect::<Vec<_>>();
+    let selections = selections
+        .into_iter()
+        .map(|(requirement, provider)| {
+            ProviderSelection::new(RequirementId::new(requirement), ComponentId::new(provider))
+        })
+        .collect::<Vec<_>>();
+
+    resolve_capabilities(&component_outputs, &requirements, &selections)
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+        .map(|bindings| {
+            bindings
+                .into_iter()
+                .map(|binding| {
+                    (
+                        binding.provider.index(),
+                        binding.consumer.index(),
+                        binding.capability.index(),
+                    )
+                })
+                .collect()
+        })
+}
+
+fn set_requirement(
+    requirements: &mut [Option<CapabilityRequirement>],
+    index: usize,
+    requirement: CapabilityRequirement,
+) -> PyResult<()> {
+    let Some(slot) = requirements.get_mut(index) else {
+        return Err(PyValueError::new_err(format!(
+            "capability requirement has unknown index {index}"
+        )));
+    };
+    if slot.replace(requirement).is_some() {
+        return Err(PyValueError::new_err(format!(
+            "capability requirement index is declared more than once: {index}"
+        )));
+    }
+    Ok(())
 }
 
 #[pymethods]
@@ -415,6 +519,8 @@ impl SchedulerHost for OwnedPythonSchedulerHost<'_> {
 #[pymodule]
 #[allow(clippy::unnecessary_wraps)]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(dag_cycle, module)?)?;
+    module.add_function(wrap_pyfunction!(resolve_capability_bindings, module)?)?;
     module.add_class::<NativeCompiledExecutionGraph>()?;
     Ok(())
 }

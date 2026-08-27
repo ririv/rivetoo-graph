@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import threading
 import traceback
 from typing import TYPE_CHECKING
@@ -15,20 +14,11 @@ from .action_log import (
     GraphActionLog,
 )
 from .compiled import NativeCompiledSchedulerHost
-from .dynamic import (
-    DynamicConditionCache,
-    DynamicStepState,
-    initial_ready_dynamic_steps,
-    log_disabled_step_condition,
-    refresh_ready_dynamic_steps,
-)
+from .dynamic import DynamicGraphScheduling, NativeDynamicSchedulerHost
 from .executor_common import (
     as_graph_result,
     await_result,
     emit_graph_observation,
-    has_runtime_conditions,
-    logger,
-    prepare_ready_graph_run,
     step_thread_name,
 )
 from .run import (
@@ -136,16 +126,6 @@ class ParallelGraphExecutor:
         workers: int,
         ancestor_graph_scopes: tuple[GraphScope, ...] = (),
     ) -> None:
-        if has_runtime_conditions(run):
-            self._execute_graph_dynamic(
-                run,
-                graph_label_path=graph_label_path,
-                workers=workers,
-                ancestor_graph_scopes=ancestor_graph_scopes,
-            )
-            return
-        steps_by_id, graph_step_ids, sorter, ready = prepare_ready_graph_run(run)
-        failure: BaseException | None = None
         emit_graph_observation(
             observer=self.observer,
             state=self.state,
@@ -153,234 +133,28 @@ class ParallelGraphExecutor:
             label_path=graph_label_path,
             phase=GraphObservationPhase.BEFORE,
         )
-
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="GraphWorker",
-        ) as executor:
-            futures: dict[concurrent.futures.Future[None], StepId] = {}
-
-            while ready or futures:
-                while (
-                    failure is None
-                    and not self.execution_control.stop_requested()
-                    and ready
-                    and len(futures) < workers
-                ):
-                    step_id = ready.popleft()
-                    step = steps_by_id[step_id]
-                    step_label_path = run.resolve_step_label_path(
-                        step,
-                        graph_label_path=graph_label_path,
-                    )
-                    if self.state.is_skipped(step.id):
-                        sorter.done(step_id)
-                        ready.extend(sorter.get_ready())
-                        continue
-                    logger.debug(
-                        "Graph submit: step=%s ready_size=%d inflight=%d workers=%d",
-                        ".".join(step_label_path),
-                        len(ready),
-                        len(futures),
-                        workers,
-                    )
-                    futures[
-                        executor.submit(
-                            self._run_step,
-                            run,
-                            step,
-                            step_label_path,
-                            workers,
-                            graph_step_ids,
-                            ancestor_graph_scopes,
-                        )
-                    ] = step_id
-
-                if not futures:
-                    if failure is not None or self.execution_control.stop_requested():
-                        break
-                    continue
-
-                done, _ = concurrent.futures.wait(
-                    futures,
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
-                for future in done:
-                    step_id = futures.pop(future)
-                    try:
-                        future.result()
-                    except BaseException as exc:
-                        if failure is None:
-                            failure = exc
-                            self.execution_control.request_stop()
-                    else:
-                        sorter.done(step_id)
-                        if failure is None:
-                            ready.extend(sorter.get_ready())
-
-        if failure is not None:
-            raise failure
-        self.execution_control.require_running()
-        emit_graph_observation(
-            observer=self.observer,
-            state=self.state,
-            graph=run,
-            label_path=graph_label_path,
-            phase=GraphObservationPhase.AFTER_SUCCESS,
-        )
-
-    def _execute_graph_dynamic(
-        self,
-        run: DynamicGraphRun,
-        *,
-        graph_label_path: StepLabelPath,
-        workers: int,
-        ancestor_graph_scopes: tuple[GraphScope, ...] = (),
-    ) -> None:
-        condition_cache = DynamicConditionCache()
-        (
-            steps_by_id,
-            graph_step_ids,
-            ready,
-            remaining_step_ids,
-        ) = initial_ready_dynamic_steps(
+        scheduling = DynamicGraphScheduling.materialize(
             run,
-            self.state,
             graph_label_path=graph_label_path,
             ancestor_graph_scopes=ancestor_graph_scopes,
-            condition_cache=condition_cache,
         )
-        finished_step_ids: set[StepId] = set()
-        failure: BaseException | None = None
-        emit_graph_observation(
-            observer=self.observer,
-            state=self.state,
-            graph=run,
-            label_path=graph_label_path,
-            phase=GraphObservationPhase.BEFORE,
+        scheduler_host = NativeDynamicSchedulerHost(
+            scheduling,
+            self.state,
+            execution_control=self.execution_control,
+            run_leaf=lambda step: self._run_step(
+                run,
+                step,
+                scheduling.label_path(step),
+                workers,
+                scheduling.graph_step_ids,
+                scheduling.ancestor_graph_scopes,
+            ),
         )
-
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="GraphWorker",
-        ) as executor:
-            futures: dict[concurrent.futures.Future[None], StepId] = {}
-
-            while ready or futures:
-                while (
-                    failure is None
-                    and not self.execution_control.stop_requested()
-                    and ready
-                    and len(futures) < workers
-                ):
-                    step_id, step_state = ready.popleft()
-                    step = steps_by_id[step_id]
-                    step_label_path = run.resolve_step_label_path(
-                        step,
-                        graph_label_path=graph_label_path,
-                    )
-                    if self.state.is_skipped(step.id):
-                        finished_step_ids.add(step_id)
-                        refresh_ready_dynamic_steps(
-                            run,
-                            self.state,
-                            graph_label_path=graph_label_path,
-                            remaining_step_ids=remaining_step_ids,
-                            finished_step_ids=finished_step_ids,
-                            graph_step_ids=graph_step_ids,
-                            ancestor_graph_scopes=ancestor_graph_scopes,
-                            steps_by_id=steps_by_id,
-                            ready=ready,
-                            condition_cache=condition_cache,
-                        )
-                        continue
-                    match step_state:
-                        case DynamicStepState.DISABLED:
-                            log_disabled_step_condition(
-                                step,
-                                label_path=step_label_path,
-                            )
-                            self.state.skip_step(step.id)
-                            finished_step_ids.add(step_id)
-                            refresh_ready_dynamic_steps(
-                                run,
-                                self.state,
-                                graph_label_path=graph_label_path,
-                                remaining_step_ids=remaining_step_ids,
-                                finished_step_ids=finished_step_ids,
-                                graph_step_ids=graph_step_ids,
-                                ancestor_graph_scopes=ancestor_graph_scopes,
-                                steps_by_id=steps_by_id,
-                                ready=ready,
-                                condition_cache=condition_cache,
-                            )
-                            continue
-                        case DynamicStepState.READY:
-                            pass
-                        case _:
-                            raise GraphError(
-                                f"ready queue must not contain pending step: {step.id}"
-                            )
-                    logger.debug(
-                        "Graph submit: step=%s ready_size=%d inflight=%d workers=%d",
-                        ".".join(step_label_path),
-                        len(ready),
-                        len(futures),
-                        workers,
-                    )
-                    futures[
-                        executor.submit(
-                            self._run_step,
-                            run,
-                            step,
-                            step_label_path,
-                            workers,
-                            graph_step_ids,
-                            ancestor_graph_scopes,
-                        )
-                    ] = step_id
-
-                if not futures:
-                    if failure is not None or self.execution_control.stop_requested():
-                        break
-                    continue
-
-                done, _ = concurrent.futures.wait(
-                    futures,
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
-                for future in done:
-                    step_id = futures.pop(future)
-                    try:
-                        future.result()
-                    except BaseException as exc:
-                        if failure is None:
-                            failure = exc
-                            self.execution_control.request_stop()
-                    else:
-                        finished_step_ids.add(step_id)
-                        if failure is None:
-                            refresh_ready_dynamic_steps(
-                                run,
-                                self.state,
-                                graph_label_path=graph_label_path,
-                                remaining_step_ids=remaining_step_ids,
-                                finished_step_ids=finished_step_ids,
-                                graph_step_ids=graph_step_ids,
-                                ancestor_graph_scopes=ancestor_graph_scopes,
-                                steps_by_id=steps_by_id,
-                                ready=ready,
-                                condition_cache=condition_cache,
-                            )
-
-        if failure is not None:
-            raise failure
-        self.execution_control.require_running()
-        if remaining_step_ids:
-            raise GraphError(
-                "dynamic graph has unresolved conditional dependencies: "
-                + ", ".join(str(step_id) for step_id in sorted(remaining_step_ids))
-            )
+        try:
+            scheduling.native_graph.run_threaded(scheduler_host, workers)
+        except ValueError as exc:
+            raise GraphError(str(exc)) from exc
         emit_graph_observation(
             observer=self.observer,
             state=self.state,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ._native import resolve_capability_bindings
 from .errors import GraphError
 
 if TYPE_CHECKING:
@@ -93,54 +94,25 @@ def resolve_capability_requirements(
 
     mounted_components = tuple(components)
     mounted_set = set(mounted_components)
-    providers = _index_capability_providers(mounted_components)
-    selection_by_requirement: dict[
-        AnyProviderRequirement,
-        CapabilitySelection,
-    ] = {}
-    for selection in selections:
-        requirement = selection.requirement
-        if requirement in selection_by_requirement:
-            raise GraphError(
-                "capability requirement has multiple provider selections: "
-                f"{_step_label(requirement.consumer)} requires "
-                f"{requirement.capability.name}"
-            )
-        selection_by_requirement[requirement] = selection
+    component_indexes = {
+        component: index for index, component in enumerate(mounted_components)
+    }
+    component_graphs = tuple(
+        _require_component_graph(component) for component in mounted_components
+    )
+    declared_requirements = tuple(requirements)
+    declared_selections = tuple(selections)
 
-    bindings: list[CapabilityBinding] = []
-    requirement_kinds: dict[tuple[Step, Capability], type[CapabilityRequirement]] = {}
-    seen_any_requirements: set[tuple[Step, Capability]] = set()
-    seen_exact_requirements: set[tuple[Step, Capability, Step]] = set()
-    used_selections: set[AnyProviderRequirement] = set()
-    for requirement in requirements:
-        key = (requirement.consumer, requirement.capability)
-        requirement_kind = type(requirement)
-        previous_kind = requirement_kinds.setdefault(key, requirement_kind)
-        if previous_kind is not requirement_kind:
-            raise GraphError(
-                "capability input mixes any-provider and exact-provider requirements: "
-                f"{_step_label(requirement.consumer)} requires "
-                f"{requirement.capability.name}"
-            )
-        if isinstance(requirement, AnyProviderRequirement):
-            if key in seen_any_requirements:
-                raise GraphError(
-                    "capability requirement is declared more than once: "
-                    f"{_step_label(requirement.consumer)} requires "
-                    f"{requirement.capability.name}"
-                )
-            seen_any_requirements.add(key)
-        if isinstance(requirement, ExactProviderRequirement):
-            exact_key = (*key, requirement.provider)
-            if exact_key in seen_exact_requirements:
-                raise GraphError(
-                    "exact capability requirement is declared more than once: "
-                    f"{_step_label(requirement.consumer)} requires "
-                    f"{requirement.capability.name} from "
-                    f"{_step_label(requirement.provider)}"
-                )
-            seen_exact_requirements.add(exact_key)
+    capabilities: dict[Capability, int] = {}
+    for graph in component_graphs:
+        for output in graph.capability_outputs:
+            capabilities.setdefault(output.capability, len(capabilities))
+    for requirement in declared_requirements:
+        capabilities.setdefault(requirement.capability, len(capabilities))
+
+    any_requirements: list[tuple[int, int, int]] = []
+    exact_requirements: list[tuple[int, int, int, int]] = []
+    for index, requirement in enumerate(declared_requirements):
         _require_mounted_component(
             requirement.consumer,
             mounted_set,
@@ -150,78 +122,69 @@ def resolve_capability_requirements(
             requirement.consumer,
             requirement.input,
         )
-
         match requirement:
             case ExactProviderRequirement(provider=provider):
-                selected_provider = provider
+                _require_mounted_component(provider, mounted_set, role="provider")
+                _require_capability_output(provider, requirement.capability)
+                exact_requirements.append(
+                    (
+                        index,
+                        component_indexes[requirement.consumer],
+                        capabilities[requirement.capability],
+                        component_indexes[provider],
+                    )
+                )
             case AnyProviderRequirement():
-                candidates = providers.get(requirement.capability, ())
-                selection = selection_by_requirement.get(requirement)
-                if selection is not None:
-                    used_selections.add(requirement)
-                    selected_provider = selection.provider
-                    if selected_provider not in candidates:
-                        raise GraphError(
-                            "selected component does not provide capability: "
-                            f"{_step_label(selected_provider)} does not provide "
-                            f"{requirement.capability.name}"
-                        )
-                elif len(candidates) == 1:
-                    selected_provider = candidates[0]
-                elif not candidates:
-                    raise GraphError(
-                        "capability has no provider: "
-                        f"{_step_label(requirement.consumer)} requires "
-                        f"{requirement.capability.name}"
+                any_requirements.append(
+                    (
+                        index,
+                        component_indexes[requirement.consumer],
+                        capabilities[requirement.capability],
                     )
-                else:
-                    candidate_labels = ", ".join(
-                        _step_label(candidate) for candidate in candidates
-                    )
-                    raise GraphError(
-                        "capability provider is ambiguous: "
-                        f"{_step_label(requirement.consumer)} requires "
-                        f"{requirement.capability.name}; candidates: "
-                        f"{candidate_labels}"
-                    )
+                )
 
-        _require_mounted_component(
-            selected_provider,
-            mounted_set,
-            role="provider",
+    native_selections = [
+        (
+            _requirement_index(declared_requirements, selection.requirement),
+            component_indexes.get(selection.provider, len(mounted_components)),
         )
-        _require_capability_output(
-            selected_provider,
-            requirement.capability,
+        for selection in declared_selections
+    ]
+    component_outputs = [
+        [capabilities[output.capability] for output in graph.capability_outputs]
+        for graph in component_graphs
+    ]
+    try:
+        resolved = resolve_capability_bindings(
+            component_outputs,
+            len(declared_requirements),
+            any_requirements,
+            exact_requirements,
+            native_selections,
         )
-        bindings.append(
-            CapabilityBinding(
-                source=selected_provider,
-                target=requirement.consumer,
-                capability=requirement.capability,
-            )
-        )
+    except ValueError as error:
+        raise GraphError(str(error)) from error
 
-    unused_selections = set(selection_by_requirement) - used_selections
-    if unused_selections:
-        requirement = next(iter(unused_selections))
-        raise GraphError(
-            "provider selection has no matching any-provider requirement: "
-            f"{_step_label(requirement.consumer)} requires "
-            f"{requirement.capability.name}"
+    capabilities_by_index = tuple(capabilities)
+    return tuple(
+        CapabilityBinding(
+            source=mounted_components[provider],
+            target=mounted_components[consumer],
+            capability=capabilities_by_index[capability],
         )
-    return tuple(bindings)
+        for provider, consumer, capability in resolved
+    )
 
 
-def _index_capability_providers(
-    components: tuple[Step, ...],
-) -> dict[Capability, tuple[Step, ...]]:
-    mutable: dict[Capability, list[Step]] = {}
-    for component in components:
-        graph = _require_component_graph(component)
-        for output in graph.capability_outputs:
-            mutable.setdefault(output.capability, []).append(component)
-    return {capability: tuple(providers) for capability, providers in mutable.items()}
+def _requirement_index(
+    requirements: tuple[CapabilityRequirement, ...],
+    selected: AnyProviderRequirement,
+) -> int:
+    for index, requirement in enumerate(requirements):
+        if requirement == selected:
+            return index
+    # 交由 Rust 核心统一报告未知 selection；这里不复制结构校验。
+    return len(requirements)
 
 
 def _require_mounted_component(

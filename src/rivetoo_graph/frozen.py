@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ._native import dag_cycle
 from .capability import Capability, CapabilityBinding
 from .errors import GraphError
 from .model import (
@@ -17,7 +18,6 @@ from .model import (
     step_ids_for_mount,
 )
 from .static_condition import StaticCondition, evaluate_static_condition
-from .topology import Arc, DAGTopology, DirectedTopology, TopologyCycleError
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,21 +134,26 @@ class FrozenGraph:
                     f"{binding.target}"
                 )
 
-        topology = DirectedTopology(
-            nodes=tuple(step.id for step in self.steps),
-            arcs=tuple(
-                Arc(source=dependency, target=step.id)
-                for step in self.steps
-                for dependency in _frozen_step_dependency_ids(step)
-            ),
-        )
+        step_indexes = {step.id: index for index, step in enumerate(self.steps)}
         try:
-            DAGTopology(topology)
-        except TopologyCycleError as exc:
-            cycle = " -> ".join(str(item) for item in exc.cycle)
+            cycle_indexes = dag_cycle(
+                len(self.steps),
+                [
+                    (
+                        step_indexes.get(dependency, len(self.steps)),
+                        step_indexes[step.id],
+                    )
+                    for step in self.steps
+                    for dependency in _frozen_step_dependency_ids(step)
+                ],
+            )
+        except ValueError as exc:
+            raise GraphError(str(exc)) from exc
+        if cycle_indexes is not None:
+            cycle = " -> ".join(str(self.steps[index].id) for index in cycle_indexes)
             raise GraphError(
                 f"frozen graph '{self.label}' has dependency cycle: {cycle}"
-            ) from exc
+            )
 
     @property
     def requires_compiled_execution(self) -> bool:

@@ -172,17 +172,18 @@ A --[condition]--> B
 
 当前 dynamic 路径里和条件 step 相关的关键点是：
 
-- `runtime_step_condition_value(...)`
-  - 在 `reads` 完成后求值并缓存 `step.when`
-- `dynamic_step_state(...)`
-  - 统一把 step 判定为 `PENDING`、`DISABLED` 或 `READY`
-- `initial_ready_dynamic_steps(...)` / `refresh_ready_dynamic_steps(...)`
-  - 维护 ready 队列，并复用 `DynamicConditionCache` 中已经确定的条件结果
+- `DynamicGraphScheduling.materialize(...)`
+  - 把当前一层 `FrozenGraph` 的 prerequisite、condition 和 reads 批量映射成 Rust 输入
+- `NativeDynamicSchedulerHost`
+  - 只在 predicate、action、结果和停止控制边界回调 Python
+- Rust `CompiledScheduler`
+  - 统一维护 `PENDING`、`DISABLED`、`READY` 与条件缓存
 
 这里的关键语义是：
 
 - 条件为假时，step 不再等待自己的 `after`
 - 因为“视为不存在”的 step 不应再阻塞下游
+- 每层子图保持独立调度边界，不会为了复用 compiled scheduler 而隐式展开
 
 ## Compiled 路径
 

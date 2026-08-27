@@ -3,12 +3,13 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Literal, TypeGuard
 
+from ._native import dag_cycle
 from .capability import CapabilityBinding, CapabilityInput, CapabilityOutput
 from .errors import GraphError
 from .static_condition import StaticCondition, StaticConditionEval
-from .topology import Arc, DAGTopology, DirectedTopology, TopologyCycleError
+from .topology import Arc
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -646,29 +647,34 @@ def _validate_graph_topology(
     graph_label: str,
 ) -> None:
     known_steps = _validated_steps(steps, graph_label=graph_label)
-    step_ids = {step: StepId((index,)) for index, step in enumerate(steps)}
-
-    # Graph 关系在迭代时完成业务校验和 Arc 投影；DirectedTopology 同次消费
-    # Arc 并创建索引，随后 DAGTopology 直接复用前驱索引完成环检测。
-    topology = DirectedTopology(
-        nodes=steps,
-        arcs=_validated_blocking_arcs(
+    step_indexes = {step: index for index, step in enumerate(steps)}
+    blocking_arcs = tuple(
+        _validated_blocking_arcs(
             steps,
             edges,
             known_steps=known_steps,
             graph_label=graph_label,
-        ),
+        )
     )
     try:
-        DAGTopology(topology)
-    except TopologyCycleError as exc:
-        cycle_steps = cast("tuple[Step, ...]", exc.cycle)
-        cycle = " -> ".join(
-            resolve_step_label(item, step_ids[item]) for item in cycle_steps
+        cycle_indexes = dag_cycle(
+            len(steps),
+            [
+                (
+                    step_indexes.get(arc.source, len(steps)),
+                    step_indexes.get(arc.target, len(steps)),
+                )
+                for arc in blocking_arcs
+            ],
         )
-        raise GraphError(
-            f"graph '{graph_label}' has dependency cycle: {cycle}"
-        ) from exc
+    except ValueError as exc:
+        raise GraphError(str(exc)) from exc
+    if cycle_indexes is not None:
+        cycle = " -> ".join(
+            resolve_step_label(steps[index], StepId((index,)))
+            for index in cycle_indexes
+        )
+        raise GraphError(f"graph '{graph_label}' has dependency cycle: {cycle}")
 
 
 def _validate_capability_interface(
