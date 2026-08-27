@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rivetoo-graph"
+version = "0.1.0"
+description = "显式、可组合的 Python DAG 声明与执行库"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pyright[nodejs]>=1.1.409",
+    "pytest>=8.0",
+    "ruff>=0.14.14",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rivetoo_graph = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "-q"]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I",
+    "TC",
+    "UP",
+    "B",
+    "C4",
+    "ARG001",
+    "ANN001",
+    "ANN002",
+    "ANN003",
+    "ANN201",
+    "ANN202",
+    "ANN204",
+    "ANN205",
+    "ANN206",
+    "ANN401",
+    "RUF005",
+    "RUF059",
+    "RUF100",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ANN001",
+    "ANN002",
+    "ANN003",
+    "ANN201",
+    "ANN202",
+    "ANN204",
+    "ANN205",
+    "ANN206",
+    "ANN401",
+    "ARG001",
+    "TC001",
+    "TC002",
+    "TC003",
+    "TC006",
+]
+
+[tool.pyright]
+pythonVersion = "3.13"
+extraPaths = ["src"]
+typeCheckingMode = "standard"
+reportMissingParameterType = "warning"

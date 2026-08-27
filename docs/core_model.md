@@ -1,0 +1,468 @@
+# 核心模型
+
+Graph 模块把声明、实例化、编译和执行分成独立阶段：
+
+```text
+Graph / Step
+    ↓ freeze_graph(...)
+FrozenGraph / FrozenStep
+    ↓ compile_graph(...)
+GraphCompilation
+    ↓ Graph runtime
+GraphExecutionState
+```
+
+声明层只表达结构，不保存某次执行的状态；内部身份只在图挂载时产生。
+
+## 纯拓扑层
+
+`rivetoo_graph.topology` 提供不携带执行或领域行为的基础图结构：
+
+- `Arc[NodeT]`
+  - 一条从 `source` 指向 `target` 的有向边
+- `DirectedTopology[NodeT]`
+  - 只保存节点与有向边
+  - 允许存在环
+  - 提供前驱、后继和从根节点计算可达集合的能力
+- `DAGTopology[NodeT]`
+  - 组合一份 `DirectedTopology`
+  - 构造时完成无环校验
+  - 只有无环拓扑才能产生该类型
+
+这层不认识 `Step`、action、条件、capability 或运行状态。执行 `Graph` 会把所有
+真实阻塞关系投影为 `DirectedTopology[Step]`，再通过 `DAGTopology` 验证；
+`FrozenGraph` 与 `GraphCompilation` 使用同一套校验。其它领域图也可以复用纯拓扑层，
+但保留自己的节点、边和方向语义。
+
+## `Graph`
+
+位置：
+
+- `rivetoo-graph/src/rivetoo_graph/model.py`
+
+`Graph` 是声明态执行 DAG，包含：
+
+- `label: str | None`
+- `steps: tuple[Step, ...]`
+- `edges: tuple[GraphEdge, ...]`
+- `capability_inputs: tuple[CapabilityInput, ...]`
+- `capability_outputs: tuple[CapabilityOutput, ...]`
+- `observe: GraphObserve`
+- `static_condition_eval: StaticConditionEval | None`
+
+`Graph` 不负责执行，也不带 `run()`。
+
+`label` 只用于展示，不是调度身份。它可以省略：
+
+- 根图省略 label 时，使用 `GraphPlan.label`
+- 嵌套图省略 label 时，使用承载它的 Step 的已解析 label
+- Graph 显式声明 label 时，该值优先
+
+图的依赖关系只保存在 `Graph.edges` 中。规范化后的 `Graph` 不接受
+`StepWiring`，也不会从 Step 读取第二份拓扑事实。
+
+## `Step`
+
+`Step` 是声明态执行节点，包含：
+
+- `label: str | None`
+- `action: LeafAction | Graph`
+- `when: StaticCondition | RuntimeCondition | None`
+
+`Step` 没有公开 `id`，也不保存 `after`。
+
+```python
+prepare = Step(prepare_source, label="prepare")
+compile_step = Step(lambda: compile_source(flags), label="compile")
+```
+
+直接传入 callable 时，`Step` 会把它规范化为 `LeafAction`。Graph core 和
+runtime 最终只消费两种 action：
+
+- `LeafAction`：执行叶子动作
+- `Graph`：保留显式子图边界
+
+同名 label 合法。声明期的 Step 身份是对象本身，因此：
+
+- 同一个 Step 不能在同一张 Graph 中挂载两次
+- 同一个 Step 可以在不同 Graph 中使用不同接线
+- 跨图引用会在 Graph 构造时失败
+
+## 身份与展示
+
+当前模型严格区分身份与展示：
+
+- `Step` 对象引用
+  - 声明期引用
+  - 用于边、运行时条件读取和结果读取
+- `StepId`
+  - Step 在一次具体挂载中的内部结构身份
+  - 由挂载位置生成，例如 `0`、`1`、`1.0`
+  - 供 freeze、compiler、runtime 和结果存储使用
+- `Step.label`
+  - 可选展示名
+- `Graph.label`
+  - 图自身的可选展示名
+- `GraphPlan.label`
+  - 本次执行的根展示名
+
+`GraphPlan.label`、`Graph.label` 和 `Step.label` 都不承担身份语义。
+
+未填写 Step label 时，freeze 阶段使用该挂载位置的 `StepId` 作为展示名。
+因此匿名 lambda 可以保持无 label，不需要为了显示而伪造稳定身份。
+
+## 拓扑与接线
+
+规范化边是和类型：
+
+```python
+type GraphEdge = (
+    UnconditionalEdge
+    | ConditionalEdge
+    | CapabilityBinding
+)
+```
+
+两种边都引用真实 Step 对象：
+
+- `UnconditionalEdge(source, target)`
+- `ConditionalEdge(source, target, condition)`
+
+作者通常不需要直接构造边，可以使用 `Step.wire(...)`：
+
+```python
+prepare = Step(prepare_source, label="prepare")
+compile_step = Step(compile_source, label="compile")
+
+graph = Graph.from_wiring(
+    wiring=(
+        prepare.wire(),
+        compile_step.wire(after=(prepare,)),
+    )
+)
+```
+
+`StepWiring` 只是一份一次性接线输入。`Graph.from_wiring(...)` 会把它解析成
+`Graph.steps + Graph.edges`，之后不再保留包装器。
+
+条件 prerequisite 使用显式类型：
+
+```python
+archive.wire(
+    after=(
+        build,
+        ConditionalPrerequisite(
+            android_shim,
+            condition=android_only,
+        ),
+    )
+)
+```
+
+字符串不能引用 Step。声明图必须直接引用对象，避免 label 同名、重命名或子图作用域
+导致引用歧义。
+
+`CapabilityBinding` 是解析完成后的跨子图能力边。能力接口、任意提供者需求、精确
+提供者需求和 compiled lowering 见 [capabilities.md](./capabilities.md)。
+
+## 组合 DSL
+
+Graph DSL 只保留两个运算符：
+
+```python
+A >> B
+# B 依赖 A
+
+A | B
+# A 与 B 并列，不增加依赖
+```
+
+它们返回 `GraphWiring`，需要显式物化成 Graph：
+
+```python
+graph = (
+    prepare
+    >> (compile_a | compile_b)
+    >> install
+).graph()
+```
+
+组合规则是：
+
+- `A >> B`：A 的所有出口连接到 B 的所有入口
+- `A | B`：合并两侧步骤和边，不新增边
+- `A >> (B | C)`：fan-out
+- `(A | B) >> C`：fan-in
+
+已有 Graph 作为 operand 时会被包装成一个 Step，不会自动展开：
+
+```python
+pipeline = (prepare >> child_graph >> install).graph()
+```
+
+这样会保留 `child_graph` 的子图边界。Graph 也可以显式转换为 Step，并传递挂载参数：
+
+```python
+child_step = child_graph.step(
+    label="build",
+    when=condition,
+)
+```
+
+`Graph.step()` 与 DSL 的自动包装使用同一套 Graph→Step 语义。
+
+## `LeafAction`
+
+`LeafAction` 只接受两种 callable：
+
+```python
+Callable[[], object]
+Callable[[StepRunContext], object]
+```
+
+它在构造时检查签名并固定调用分支，runtime 不再猜测或转换参数：
+
+- 零参数 action 调用 `fn()`
+- 上下文 action 调用 `fn(run_ctx)`
+
+业务参数由闭包绑定：
+
+```python
+Step(
+    lambda: generate_pkg_config_file(layout, version),
+    label="pkgconfig",
+)
+```
+
+同时需要业务参数和运行上下文时，业务参数仍由闭包捕获，唯一显式形参留给
+`StepRunContext`：
+
+```python
+Step(
+    lambda run_ctx: compile_source(
+        compiler,
+        run_ctx.require_value(prepare),
+    ),
+    label="compile",
+)
+```
+
+若 callable 同时支持零参数和单参数调用，固定按零参数调用。这样
+`lambda value=value: ...` 的默认参数不会被运行上下文覆盖。
+
+`step(action)` 是轻量声明入口：
+
+- 普通函数使用函数名作为 label
+- `LeafAction` 使用其函数名作为 label
+- Graph 使用 `Graph.label`
+- lambda 或无名 callable 保持无 label
+
+它不绑定业务参数，也不提供另一套运行协议。
+
+## 运行时返回子图
+
+LeafAction 可以在运行时返回 Graph。runtime 会把返回值作为当前 Step 的显式子图
+冻结并执行：
+
+```python
+def select_graph(run_ctx: StepRunContext) -> Graph:
+    selected = run_ctx.require_value(select_strategy)
+    return graph_for(selected)
+```
+
+这个能力用于先读取运行时结果，再选择下一层结构。它不会展开或改写返回的 Graph，
+也不会创建隐藏执行入口。
+
+## 条件
+
+条件分成两层：
+
+- `Step.when`
+  - 控制 Step 本身是否参与执行
+- `ConditionalEdge`
+  - 控制一条 prerequisite 是否成立
+
+条件值是和类型：
+
+- `StaticCondition`
+  - 在 freeze 阶段求值
+- `RuntimeCondition`
+  - 在 runtime 中求值
+
+运行时条件使用 Step 对象声明读取依赖：
+
+```python
+cache_miss = runtime_condition(
+    reads=(cache_probe,),
+    when=lambda ctx: not bool(ctx.require_value(cache_probe)),
+)
+```
+
+`reads` 不是普通 prerequisite，但会阻塞条件求值，因此与 Graph edges 一起参与环检测，
+并在引用两端均已进入当前 wiring 后参与入口和出口计算。
+
+## `GraphPlan`
+
+位置：
+
+- `rivetoo-graph/src/rivetoo_graph/plan.py`
+
+`GraphPlan` 把声明图绑定到一次执行：
+
+```python
+plan = GraphPlan(
+    label="build",
+    graph=graph,
+    execution_state=GraphExecutionState(),
+    execution_control=GraphExecutionControl(),
+)
+```
+
+它包含：
+
+- `label: str`
+- `graph: Graph`
+- `execution_state: GraphExecutionState`
+- `execution_control: GraphExecutionControl`
+- `action_log: GraphActionLog`
+- `execution_output: GraphExecutionOutput`
+
+并提供：
+
+- `freeze()`
+- `compile()`
+- `run(...)`
+- `require_result(step)`
+
+`GraphPlan.label` 只是根展示名。调度和结果定位继续使用 `StepId`。
+
+`GraphExecutionState` 只属于当前 Plan 的一次运行。`GraphExecutionControl`
+默认同样由 Plan 独享；宿主若需要把多个顺序 Plan 归入同一次停止控制，可以显式
+把同一实例传给它们，但不会因此合并两份执行结果。control 收到停止请求后不可
+恢复；需要新的执行作用域时必须创建新实例。
+
+`GraphPlan` 本身不读取宿主的全局日志目录、日志上下文或停止状态。独立使用时，
+`action_log` 不接入宿主日志设施，`execution_output` 也不写外部文件；需要文件输出时，
+宿主显式传入 Graph 提供的 `TreeFileExecutionOutput(output_dir)`。
+
+## `FrozenGraph`
+
+位置：
+
+- `rivetoo-graph/src/rivetoo_graph/frozen.py`
+
+`freeze_graph(...)` 针对一次挂载实例化声明图：
+
+- 为每个 Step 分配 `StepId`
+- 解析可选 label
+- 求值并裁剪静态 Step 条件
+- 求值静态条件边
+- 把 Step 对象引用转换为 `StepId`
+- 把运行时条件转换为 `FrozenRuntimeCondition`
+- 递归冻结声明期已知子图
+
+`FrozenStep` 保存：
+
+- `id: StepId`
+- `source_step: Step`
+- 已解析的 `label`
+- `LeafAction | FrozenGraph`
+- 冻结后的 prerequisite 和 runtime `when`
+
+dynamic runtime 只执行 FrozenGraph，不直接执行声明态 Graph。
+
+## `GraphCompilation`
+
+位置：
+
+- `rivetoo-graph/src/rivetoo_graph/compile.py`
+
+compiled 路径会把声明期已知子图的叶子展开：
+
+- `CompiledStep`
+  - 会提交给 worker 的叶子
+- `CompiledComposite`
+  - 子图边界的非执行生命周期投影
+- `roots`
+  - 根图直接拥有的 typed refs
+
+`CompiledComposite` 不执行 action，也不生成 no-op 节点。它保留：
+
+- 子图边界
+- 直接子节点
+- prerequisite
+- runtime `when`
+- observation
+- 整体完成状态
+
+动态和编译路径使用同一批 `StepId` 与声明作用域映射，因此结果读取语义一致。
+
+## 结果与运行上下文
+
+位置：
+
+- `rivetoo-graph/src/rivetoo_graph/results.py`
+
+结果存储按 `StepId` 保存成功 Step 的返回值。声明 action 不直接使用 StepId，而是
+通过 Step 对象读取：
+
+```python
+def compile_action(run_ctx: StepRunContext) -> None:
+    source = run_ctx.require_value(prepare)
+    compile_source(source)
+```
+
+同级引用直接传 Step。跨到祖先图时使用：
+
+```python
+ParentGraphStepRef(
+    step=outer_prepare,
+    levels_up=1,
+)
+```
+
+不支持字符串引用，也不会自动向最近祖先搜索。
+
+`StepRunContext` 把只读视图和运行控制组合在同一个 action 入口：
+
+- `view: StepReadContext`
+- `control: StepControl`
+- `component_log_path`
+
+常用只读 API：
+
+- `result(step)` / `require_result(step)`
+- `value(step)` / `require_value(step)`
+- `has_result(step)`
+- `step_id`
+- `label_path`
+- `graph_label_path`
+
+副作用控制统一位于 `run_ctx.control`：
+
+- `skip_step(step_id)`
+- `skip_steps(step_ids)`
+
+component log 在执行前通过 `GraphPlan.bind_component_log_path(step, path)` 绑定。
+静态子图和 action 动态返回的子图都会继承所属 component 的日志路径；action 不提供
+运行时覆盖入口。
+
+## Observation 与执行状态
+
+`GraphObserve` 只保存只读展示消息：
+
+- `before`
+- `after_success`
+
+runtime 通过外部注入的 `GraphObserver` 发出 `GraphObservationEvent`。observer 用于
+trace、timing 和展示，不修改执行结果，也不替代显式 Step。
+
+`GraphExecutionState` 只服务一次执行，记录：
+
+- 已执行和已完成的 StepId
+- 已进入和已完成的 composite
+- skip 状态
+- runtime condition 结果
+- 可选 `GraphResultStore`
+
+同一个状态不能用于第二次 run，也不提供 reset 或兜底恢复语义。
