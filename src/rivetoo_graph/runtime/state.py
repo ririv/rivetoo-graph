@@ -184,7 +184,9 @@ class GraphExecutionState:
 
         with self._lock:
             if step_id not in self._step_label_paths:
-                raise RuntimeError(f"cannot complete a step that was not started: {step_id}")
+                raise RuntimeError(
+                    f"cannot complete a step that was not started: {step_id}"
+                )
             if step_id in self._completed_steps:
                 raise RuntimeError(f"step was completed more than once: {step_id}")
             self._completed_steps.add(step_id)
@@ -214,7 +216,9 @@ class GraphExecutionState:
     def record_result(self, step_id: StepId, value: object | None) -> None:
         with self._lock:
             if step_id not in self._step_label_paths:
-                raise RuntimeError(f"cannot record a result before step start: {step_id}")
+                raise RuntimeError(
+                    f"cannot record a result before step start: {step_id}"
+                )
             if self.results is not None:
                 self.results.record(step_id, value)
 

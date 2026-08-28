@@ -131,9 +131,7 @@ class AsyncGraphExecutor:
         async def _run_leaf(node: int) -> None:
             step = compilation._native_node(node)
             if not isinstance(step, CompiledStep):
-                raise GraphError(
-                    f"native scheduler submitted non-leaf node: {step.id}"
-                )
+                raise GraphError(f"native scheduler submitted non-leaf node: {step.id}")
             await self._run_step(
                 run,
                 step,

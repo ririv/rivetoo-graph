@@ -26,9 +26,7 @@ def _recipe_graph(recipe_index: int, *, steps: int) -> Graph:
     previous: Step | None = None
     for phase_index in range(steps):
         phase = Step(lambda: None, label=f"phase-{phase_index}")
-        wiring.append(
-            phase.wire(after=() if previous is None else (previous,))
-        )
+        wiring.append(phase.wire(after=() if previous is None else (previous,)))
         previous = phase
     return Graph.from_wiring(
         wiring=tuple(wiring),
@@ -49,9 +47,7 @@ def _root_graph(*, recipes: int, steps: int, lanes: int) -> Graph:
         wiring=tuple(
             component.wire(
                 after=(
-                    ()
-                    if recipe_index < lanes
-                    else (components[recipe_index - lanes],)
+                    () if recipe_index < lanes else (components[recipe_index - lanes],)
                 )
             )
             for recipe_index, component in enumerate(components)

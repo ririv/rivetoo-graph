@@ -41,16 +41,13 @@ class CompiledExecutionHost:
         # 初始化一次遍历 V 个 native 节点，时间/空间均为 O(V)；之后每次
         # advance 只处理尚未转发的新增请求 ΔS，不再扫描整张图。
         self._native_index_by_step_id = {
-            node.id: index
-            for index, node in enumerate(self.compilation._native_nodes)
+            node.id: index for index, node in enumerate(self.compilation._native_nodes)
         }
         self._forwarded_skip_step_ids: set[StepId] = set()
 
     def skipped_nodes(self) -> list[int]:
         nodes: list[int] = []
-        for step_id in (
-            self.state.skip_request_ids() - self._forwarded_skip_step_ids
-        ):
+        for step_id in self.state.skip_request_ids() - self._forwarded_skip_step_ids:
             index = self._native_index_by_step_id.get(step_id)
             if index is None:
                 continue

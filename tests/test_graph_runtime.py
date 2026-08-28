@@ -243,9 +243,7 @@ def test_graph_plan_rejects_unknown_initial_skip_request() -> None:
         GraphPlan(
             label="root",
             graph=graph,
-            execution_state=GraphExecutionState(
-                initial_skip_requests={StepId((1,))}
-            ),
+            execution_state=GraphExecutionState(initial_skip_requests={StepId((1,))}),
         ).run(options=ThreadGraphRunOptions(workers=1))
 
 
@@ -1044,9 +1042,7 @@ def test_compiled_skipped_composite_preserves_prerequisite_boundary() -> None:
     GraphPlan(
         label="root",
         graph=graph,
-        execution_state=GraphExecutionState(
-            initial_skip_requests={StepId((1,))}
-        ),
+        execution_state=GraphExecutionState(initial_skip_requests={StepId((1,))}),
     ).run(
         options=ThreadGraphRunOptions(workers=2),
         mode="compiled",

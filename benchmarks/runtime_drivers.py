@@ -26,9 +26,7 @@ if TYPE_CHECKING:
 
 def _compilation(nodes: int) -> GraphCompilation:
     graph = Graph(
-        steps=tuple(
-            Step(lambda: None, label=f"step-{index}") for index in range(nodes)
-        )
+        steps=tuple(Step(lambda: None, label=f"step-{index}") for index in range(nodes))
     )
     return compile_graph(graph, root_label="benchmark")
 
