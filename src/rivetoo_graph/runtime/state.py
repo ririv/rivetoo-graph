@@ -81,6 +81,12 @@ class GraphExecutionState:
                 current = current.parent
             return False
 
+    def skip_step_ids(self) -> frozenset[StepId]:
+        """返回当前 skip 请求与运行期 skip 事实的原子快照。"""
+
+        with self._lock:
+            return frozenset(self.skipped_steps)
+
     def record_step(self, step_id: StepId, label_path: StepLabelPath) -> None:
         """记录 step 已开始执行及其实际挂载路径。"""
 

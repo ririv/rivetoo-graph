@@ -38,6 +38,8 @@ from rivetoo_graph import (
     render_live_graph_execution,
     runtime_condition,
 )
+from rivetoo_graph.compile import compile_graph
+from rivetoo_graph.runtime.compiled import CompiledExecutionHost
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,26 @@ class _ConditionEvaluator(StaticConditionEvaluator):
 
 def _condition(name: str) -> StaticCondition:
     return StaticCondition(payload=name, description=name)
+
+
+def test_compiled_host_forwards_only_new_skip_requests() -> None:
+    first = Step(lambda: None, label="first")
+    second = Step(lambda: None, label="second")
+    compilation = compile_graph(Graph(steps=(first, second)), root_label="root")
+    state = GraphExecutionState(skipped_steps={StepId((0,))})
+    host = CompiledExecutionHost(
+        compilation,
+        state,
+        observer=None,
+        run_leaf=lambda _step: None,
+    )
+
+    assert host.skipped_nodes() == [0]
+    assert host.skipped_nodes() == []
+
+    state.skip_step(StepId((1,)))
+    assert host.skipped_nodes() == [1]
+    assert host.skipped_nodes() == []
 
 
 @dataclass(slots=True)

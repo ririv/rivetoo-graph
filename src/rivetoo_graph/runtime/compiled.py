@@ -11,6 +11,7 @@ from ..results import StepReadContext
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from ..model import StepId
     from ..observe import GraphObserver
     from .control import GraphExecutionControl
     from .state import GraphExecutionState
@@ -37,16 +38,23 @@ class CompiledExecutionHost:
         self.run_leaf_callback = run_leaf
         self.execution_control = execution_control
         self.record_composites_as_steps = record_composites_as_steps
-
-    def is_skipped(self, node: int) -> bool:
-        return self.state.is_skipped(self.compilation._native_node(node).id)
+        self._native_index_by_step_id = {
+            node.id: index
+            for index, node in enumerate(self.compilation._native_nodes)
+        }
+        self._forwarded_skip_step_ids: set[StepId] = set()
 
     def skipped_nodes(self) -> list[int]:
-        return [
-            index
-            for index, node in enumerate(self.compilation._native_nodes)
-            if self.state.is_skipped(node.id)
-        ]
+        nodes: list[int] = []
+        for step_id in (
+            self.state.skip_step_ids() - self._forwarded_skip_step_ids
+        ):
+            index = self._native_index_by_step_id.get(step_id)
+            if index is None:
+                continue
+            self._forwarded_skip_step_ids.add(step_id)
+            nodes.append(index)
+        return nodes
 
     def resolve_conditions(
         self,
@@ -71,7 +79,9 @@ class CompiledExecutionHost:
                 case 3:
                     self.complete_composite(node)
                 case 4:
-                    self.state.skip_step(self.compilation._native_node(node).id)
+                    step_id = self.compilation._native_node(node).id
+                    self._forwarded_skip_step_ids.add(step_id)
+                    self.state.skip_step(step_id)
                 case _:
                     raise GraphError(f"unknown native execution event: {kind}")
 
