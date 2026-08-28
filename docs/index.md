@@ -13,7 +13,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - `>>` 串行与 `|` 并列组合
 - 静态条件、运行时条件和条件边
 - 子图边界与能力端口
-- dynamic 与 compiled 两条执行路径
+- 统一 Rust 编译执行路径，以及 dynamic / compiled 两种展示模式
 - 线程与异步调度后端
 - 执行控制、结果读取、观察事件和渲染
 
@@ -51,9 +51,9 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - `StepWiring` / `GraphWiring`
   - 声明期组合结构
 - `FrozenGraph`
-  - dynamic runtime 的挂载后结构
+  - 静态条件实例化后的可检查结构
 - `GraphCompilation`
-  - compiled runtime 的扁平执行结构与 composite 边界
+  - 正式 runtime 使用的执行结构与 composite 边界
 
 声明期身份、展示 label 与运行时 `StepId` 是三层不同语义。调度和结果定位使用
 `StepId`；label 只用于展示。
@@ -72,7 +72,7 @@ Graph core 不知道任何具体宿主领域，例如：
 
 ## 当前限制
 
-- 递归 dynamic 子图拥有自己的局部 ready 调度边界，不提供跨层级全局并发预算
+- 运行期返回的图会创建嵌套 session，暂不共享外层 session 的全局并发预算
 - `GraphExecutionState` 只允许一次执行，不提供 reset 或复用语义
 - Graph runtime 不聚合宿主领域结果
-- 运行时动态返回的子图无法预先进入 compiled lowering
+- 运行时返回的子图无法提前编译，但返回后会立即进入同一 Rust 编译器

@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class NativeCompiledSchedulerHost:
-    """把 Rust 调度器的领域回调接回现有 Python 执行设施。"""
+class CompiledExecutionHost:
+    """把 Rust execution session 的批量事件接回 Python 运行设施。"""
 
     def __init__(
         self,
@@ -29,15 +29,51 @@ class NativeCompiledSchedulerHost:
         observer: GraphObserver | None,
         run_leaf: Callable[[CompiledStep], None],
         execution_control: GraphExecutionControl | None = None,
+        record_composites_as_steps: bool = False,
     ) -> None:
         self.compilation = compilation
         self.state = state
         self.observer = observer
         self.run_leaf_callback = run_leaf
         self.execution_control = execution_control
+        self.record_composites_as_steps = record_composites_as_steps
 
     def is_skipped(self, node: int) -> bool:
         return self.state.is_skipped(self.compilation._native_node(node).id)
+
+    def skipped_nodes(self) -> list[int]:
+        return [
+            index
+            for index, node in enumerate(self.compilation._native_nodes)
+            if self.state.is_skipped(node.id)
+        ]
+
+    def resolve_conditions(
+        self,
+        requests: list[tuple[int, int]],
+    ) -> list[tuple[int, bool]]:
+        return [
+            (condition, self.evaluate_condition(node, condition))
+            for node, condition in requests
+        ]
+
+    def apply_events(self, events: list[tuple[int, int, bool | None]]) -> None:
+        for kind, node, value in events:
+            match kind:
+                case 0:
+                    if value is None:
+                        raise GraphError("condition event is missing its value")
+                    self.record_condition(node, value)
+                case 1:
+                    self.record_condition_skip(node)
+                case 2:
+                    self.enter_composite(node)
+                case 3:
+                    self.complete_composite(node)
+                case 4:
+                    self.state.skip_step(self.compilation._native_node(node).id)
+                case _:
+                    raise GraphError(f"unknown native execution event: {kind}")
 
     def evaluate_condition(self, node: int, condition: int) -> bool:
         compiled_node = self.compilation._native_node(node)
@@ -66,14 +102,23 @@ class NativeCompiledSchedulerHost:
 
     def record_condition_skip(self, node: int) -> None:
         compiled_node = self.compilation._native_node(node)
+        condition = compiled_node.when
+        if condition is None:
+            raise GraphError(
+                f"disabled compiled step has no runtime condition: {compiled_node.id}"
+            )
+        reads = ",".join(str(read.id.segments) for read in condition.reads) or "-"
         logger.debug(
-            "Condition: skip %s (value=false)",
+            "Condition: skip %s (reads=%s; value=false)",
             ".".join(compiled_node.context.label_path),
+            reads,
         )
         self.state.skip_step(compiled_node.id)
 
     def enter_composite(self, node: int) -> None:
         composite = self._require_composite(node)
+        if self.record_composites_as_steps:
+            self.state.record_step(composite.id, composite.label_path)
         self.state.enter_composite(composite.id)
         _emit_composite_observation(
             composite,
@@ -84,6 +129,8 @@ class NativeCompiledSchedulerHost:
 
     def complete_composite(self, node: int) -> None:
         composite = self._require_composite(node)
+        if self.record_composites_as_steps:
+            self.state.complete_step(composite.id)
         self.state.complete_composite(composite.id)
         _emit_composite_observation(
             composite,

@@ -271,7 +271,7 @@ def test_any_provider_requirement_uses_explicit_selection_when_ambiguous() -> No
     )
 
 
-def test_capability_binding_rejects_dynamic_execution() -> None:
+def test_capability_binding_uses_unified_execution_path() -> None:
     capability = Capability("123")
     ready = Step(lambda: None)
     needs = Step(lambda: None)
@@ -293,5 +293,4 @@ def test_capability_binding_rejects_dynamic_execution() -> None:
         ),
     )
 
-    with pytest.raises(GraphError, match="require compiled execution mode"):
-        GraphPlan(label="root", graph=graph).run()
+    GraphPlan(label="root", graph=graph).run()

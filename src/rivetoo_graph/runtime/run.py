@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from ..compile import CompiledStep, GraphCompilation
 from ..errors import GraphError
-from ..frozen import FrozenGraph, FrozenStep
 from ..results import GraphScope, StepControl, StepReadContext, StepRunContext
 
 if TYPE_CHECKING:
@@ -42,157 +41,21 @@ class AsyncGraphRunOptions:
 
 
 type GraphRunOptions = ThreadGraphRunOptions | AsyncGraphRunOptions
-type ExecutableGraph = FrozenGraph | GraphCompilation
-type ExecutableStep = FrozenStep | CompiledStep
-
-
-class GraphRunLike(Protocol):
-    """执行器消费的统一图视图。
-
-    `FrozenGraph` 和 `GraphCompilation` 的 step id、路径和结果作用域规则
-    不同。执行器只依赖该协议进行调度，具体适配由 `DynamicGraphRun` 和
-    `CompiledGraphRun` 完成，避免在三个执行器中重复模式分支。
-    """
-
-    @property
-    def label(self) -> str: ...
-
-    @property
-    def observe(self) -> GraphObserve: ...
-
-    @property
-    def source_graph(self) -> Graph: ...
-
-    component_log_path: Path | None
-
-    @property
-    def steps(self) -> tuple[ExecutableStep, ...]: ...
-
-    @property
-    def observation_step_ids(self) -> Mapping[Step, StepId]: ...
-
-    def nest(
-        self,
-        graph: FrozenGraph,
-        *,
-        component_log_path: Path | None = None,
-    ) -> DynamicGraphRun: ...
-
-    def resolve_step_label_path(
-        self,
-        step: ExecutableStep,
-        *,
-        graph_label_path: StepLabelPath,
-    ) -> StepLabelPath: ...
-
-    def make_run_context(
-        self,
-        state: GraphExecutionState,
-        runtime_step: RuntimeStep,
-    ) -> StepRunContext: ...
-
-    def child_graph_scope(
-        self,
-        step: ExecutableStep,
-        *,
-        graph_step_ids: Mapping[Step, StepId],
-    ) -> GraphScope: ...
+type ExecutableGraph = GraphCompilation
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeStep:
     """当前可执行 step 及其声明图结果读取作用域。"""
 
-    step: ExecutableStep
+    step: CompiledStep
     label_path: StepLabelPath
     graph_step_ids: Mapping[Step, StepId]
     ancestor_graph_scopes: tuple[GraphScope, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class DynamicGraphRun(GraphRunLike):
-    """保持 `FrozenGraph` 层级和局部 step id 的动态执行视图。"""
-
-    graph: FrozenGraph
-    component_log_path: Path | None = None
-
-    @property
-    def label(self) -> str:
-        return self.graph.label
-
-    @property
-    def observe(self) -> GraphObserve:
-        return self.graph.observe
-
-    @property
-    def source_graph(self) -> Graph:
-        return self.graph.source_graph
-
-    @property
-    def steps(self) -> tuple[FrozenStep, ...]:
-        return self.graph.steps
-
-    @property
-    def observation_step_ids(self) -> Mapping[Step, StepId]:
-        return {step.source_step: step.id for step in self.graph.steps}
-
-    def nest(
-        self,
-        graph: FrozenGraph,
-        *,
-        component_log_path: Path | None = None,
-    ) -> DynamicGraphRun:
-        return DynamicGraphRun(
-            graph=graph,
-            component_log_path=(
-                self.component_log_path
-                if component_log_path is None
-                else component_log_path
-            ),
-        )
-
-    def resolve_step_label_path(
-        self,
-        step: ExecutableStep,
-        *,
-        graph_label_path: StepLabelPath,
-    ) -> StepLabelPath:
-        if not isinstance(step, FrozenStep):
-            raise GraphError(f"dynamic graph contains non-frozen step: {step.id}")
-        return (*graph_label_path, step.label)
-
-    def make_run_context(
-        self,
-        state: GraphExecutionState,
-        runtime_step: RuntimeStep,
-    ) -> StepRunContext:
-        return StepRunContext(
-            view=StepReadContext(
-                step_id=runtime_step.step.id,
-                label_path=runtime_step.label_path,
-                graph_step_ids=runtime_step.graph_step_ids,
-                ancestor_graph_scopes=runtime_step.ancestor_graph_scopes,
-                results=state.results,
-            ),
-            control=StepControl(
-                step_id=runtime_step.step.id,
-                _state=state,
-            ),
-            component_log_path=self.component_log_path,
-        )
-
-    def child_graph_scope(
-        self,
-        step: ExecutableStep,
-        *,
-        graph_step_ids: Mapping[Step, StepId],
-    ) -> GraphScope:
-        del step
-        return GraphScope(step_ids=graph_step_ids)
-
-
-@dataclass(frozen=True, slots=True)
-class CompiledGraphRun(GraphRunLike):
+class CompiledGraphRun:
     """使用编译路径和原始声明作用域执行 `GraphCompilation` 的视图。
 
     编译节点使用全局编码 id 调度，但 action 读取结果时仍应看到声明图
@@ -220,38 +83,7 @@ class CompiledGraphRun(GraphRunLike):
 
     @property
     def observation_step_ids(self) -> Mapping[Step, StepId]:
-        return {
-            step.source_step: step.id
-            for step in self.compilation.source_frozen_graph.steps
-        }
-
-    def nest(
-        self,
-        graph: FrozenGraph,
-        *,
-        component_log_path: Path | None = None,
-    ) -> DynamicGraphRun:
-        # action 在执行期返回的图不属于声明期编译产物，只能从当前
-        # 叶子路径开始按 dynamic 语义执行。
-        return DynamicGraphRun(
-            graph=graph,
-            component_log_path=(
-                self.component_log_path
-                if component_log_path is None
-                else component_log_path
-            ),
-        )
-
-    def resolve_step_label_path(
-        self,
-        step: ExecutableStep,
-        *,
-        graph_label_path: StepLabelPath,
-    ) -> StepLabelPath:
-        del graph_label_path
-        if not isinstance(step, CompiledStep):
-            raise GraphError(f"compiled graph contains non-compiled step: {step.id}")
-        return step.context.label_path
+        return self.compilation.root_graph_step_ids
 
     def make_run_context(
         self,
@@ -259,8 +91,6 @@ class CompiledGraphRun(GraphRunLike):
         runtime_step: RuntimeStep,
     ) -> StepRunContext:
         step = runtime_step.step
-        if not isinstance(step, CompiledStep):
-            raise GraphError(f"compiled graph contains non-compiled step: {step.id}")
         context = step.context
         component_log_path = self.component_log_path
         for composite_id in context.ancestor_composite_ids:
@@ -285,13 +115,11 @@ class CompiledGraphRun(GraphRunLike):
 
     def child_graph_scope(
         self,
-        step: ExecutableStep,
+        step: CompiledStep,
         *,
         graph_step_ids: Mapping[Step, StepId],
     ) -> GraphScope:
         del graph_step_ids
-        if not isinstance(step, CompiledStep):
-            raise GraphError(f"compiled graph contains non-compiled step: {step.id}")
         return GraphScope(
             step_ids=step.context.graph_step_ids,
         )

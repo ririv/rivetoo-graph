@@ -4,34 +4,30 @@ import asyncio
 import inspect
 from typing import TYPE_CHECKING, cast
 
-from ..compile import GraphCompilation
+from ..compile import CompiledStep, GraphCompilation, compile_graph
 from ..errors import GraphError
-from ..frozen import FrozenGraph, FrozenStep
 from ..observe import GraphObservationPhase, GraphObserver
 from .action_log import (
     NO_GRAPH_ACTION_LOG,
     GraphActionLog,
 )
-from .compiled import NativeCompiledSchedulerHost
-from .dynamic import DynamicGraphScheduling, NativeDynamicSchedulerHost
+from .batch_driver import run_async_session
+from .compiled import CompiledExecutionHost
 from .executor_common import (
     as_graph_result,
     emit_graph_observation,
 )
 from .run import (
     CompiledGraphRun,
-    DynamicGraphRun,
     ExecutableGraph,
-    ExecutableStep,
-    GraphRunLike,
     RuntimeStep,
 )
 from .state import GraphExecutionState
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
+    from pathlib import Path
 
-    from ..compile import CompiledStep
     from ..model import LeafAction, Step, StepId, StepLabelPath
     from ..results import GraphScope, StepRunContext
     from .control import GraphExecutionControl
@@ -80,11 +76,13 @@ class AsyncGraphExecutor:
         execution_control: GraphExecutionControl,
         observer: GraphObserver | None = None,
         action_log: GraphActionLog = NO_GRAPH_ACTION_LOG,
+        record_composites_as_steps: bool = False,
     ) -> None:
         self.state = state or GraphExecutionState()
         self.execution_control = execution_control
         self.observer = observer
         self.action_log = action_log
+        self.record_composites_as_steps = record_composites_as_steps
 
     def execute(
         self,
@@ -94,22 +92,12 @@ class AsyncGraphExecutor:
     ) -> GraphExecutionState:
         self.execution_control.require_running()
         self.state.begin_run()
-        match graph:
-            case GraphCompilation():
-                asyncio.run(
-                    self._execute_compilation(
-                        graph,
-                        concurrency=concurrency,
-                    )
-                )
-            case FrozenGraph():
-                asyncio.run(
-                    self._execute_graph(
-                        DynamicGraphRun(graph),
-                        graph_label_path=(),
-                        concurrency=concurrency,
-                    )
-                )
+        asyncio.run(
+            self._execute_compilation(
+                graph,
+                concurrency=concurrency,
+            )
+        )
         return self.state
 
     async def _execute_compilation(
@@ -117,43 +105,49 @@ class AsyncGraphExecutor:
         compilation: GraphCompilation,
         *,
         concurrency: int,
+        component_log_path: Path | None = None,
     ) -> None:
-        run = CompiledGraphRun(compilation=compilation)
+        run = CompiledGraphRun(
+            compilation=compilation,
+            component_log_path=component_log_path,
+        )
         emit_graph_observation(
             observer=self.observer,
             state=self.state,
             graph=run,
-            label_path=(),
+            label_path=compilation.root_label_path,
             phase=GraphObservationPhase.BEFORE,
         )
-        loop = asyncio.get_running_loop()
-
-        def _run_leaf(step: CompiledStep) -> None:
-            future = asyncio.run_coroutine_threadsafe(
-                self._run_step(
-                    run,
-                    step,
-                    step.context.label_path,
-                    concurrency,
-                    step.context.graph_step_ids,
-                    step.context.ancestor_graph_scopes,
-                ),
-                loop,
-            )
-            future.result()
-
-        scheduler_host = NativeCompiledSchedulerHost(
+        execution_host = CompiledExecutionHost(
             compilation,
             self.state,
             observer=self.observer,
             execution_control=self.execution_control,
-            run_leaf=_run_leaf,
+            record_composites_as_steps=self.record_composites_as_steps,
+            run_leaf=lambda _step: None,
         )
-        try:
-            await asyncio.to_thread(
-                compilation._native_graph.run_threaded,
-                scheduler_host,
+
+        async def _run_leaf(node: int) -> None:
+            step = compilation._native_node(node)
+            if not isinstance(step, CompiledStep):
+                raise GraphError(
+                    f"native scheduler submitted non-leaf node: {step.id}"
+                )
+            await self._run_step(
+                run,
+                step,
+                step.context.label_path,
                 concurrency,
+                step.context.graph_step_ids,
+                step.context.ancestor_graph_scopes,
+            )
+
+        try:
+            await run_async_session(
+                compilation._native_graph,
+                execution_host,
+                _run_leaf,
+                concurrency=concurrency,
             )
         except ValueError as exc:
             raise GraphError(str(exc)) from exc
@@ -161,72 +155,14 @@ class AsyncGraphExecutor:
             observer=self.observer,
             state=self.state,
             graph=run,
-            label_path=(),
-            phase=GraphObservationPhase.AFTER_SUCCESS,
-        )
-
-    async def _execute_graph(
-        self,
-        run: DynamicGraphRun,
-        *,
-        graph_label_path: StepLabelPath,
-        concurrency: int,
-        ancestor_graph_scopes: tuple[GraphScope, ...] = (),
-    ) -> None:
-        emit_graph_observation(
-            observer=self.observer,
-            state=self.state,
-            graph=run,
-            label_path=graph_label_path,
-            phase=GraphObservationPhase.BEFORE,
-        )
-        scheduling = DynamicGraphScheduling.materialize(
-            run,
-            graph_label_path=graph_label_path,
-            ancestor_graph_scopes=ancestor_graph_scopes,
-        )
-        loop = asyncio.get_running_loop()
-
-        def _run_leaf(step: FrozenStep) -> None:
-            future = asyncio.run_coroutine_threadsafe(
-                self._run_step(
-                    run,
-                    step,
-                    scheduling.label_path(step),
-                    concurrency,
-                    scheduling.graph_step_ids,
-                    scheduling.ancestor_graph_scopes,
-                ),
-                loop,
-            )
-            future.result()
-
-        scheduler_host = NativeDynamicSchedulerHost(
-            scheduling,
-            self.state,
-            execution_control=self.execution_control,
-            run_leaf=_run_leaf,
-        )
-        try:
-            await asyncio.to_thread(
-                scheduling.native_graph.run_threaded,
-                scheduler_host,
-                concurrency,
-            )
-        except ValueError as exc:
-            raise GraphError(str(exc)) from exc
-        emit_graph_observation(
-            observer=self.observer,
-            state=self.state,
-            graph=run,
-            label_path=graph_label_path,
+            label_path=compilation.root_label_path,
             phase=GraphObservationPhase.AFTER_SUCCESS,
         )
 
     async def _run_step(
         self,
-        run: GraphRunLike,
-        step: ExecutableStep,
+        run: CompiledGraphRun,
+        step: CompiledStep,
         label_path: StepLabelPath,
         concurrency: int,
         graph_step_ids: Mapping[Step, StepId],
@@ -234,27 +170,6 @@ class AsyncGraphExecutor:
     ) -> None:
         self.state.record_step(step.id, label_path)
         action = step.action
-        if isinstance(action, FrozenGraph):
-            await self._execute_graph(
-                run.nest(
-                    action,
-                    component_log_path=(
-                        self.state.get_component_log_path(step.id)
-                        or run.component_log_path
-                    ),
-                ),
-                graph_label_path=label_path,
-                concurrency=concurrency,
-                ancestor_graph_scopes=(
-                    run.child_graph_scope(
-                        step,
-                        graph_step_ids=graph_step_ids,
-                    ),
-                    *ancestor_graph_scopes,
-                ),
-            )
-            self.state.complete_step(step.id)
-            return
         runtime_step = RuntimeStep(
             step=step,
             label_path=label_path,
@@ -270,29 +185,27 @@ class AsyncGraphExecutor:
             run_ctx,
             self.action_log,
         )
-        nested_graph = as_graph_result(
-            value,
-            parent_step_id=step.id,
-            default_label=label_path[-1],
-        )
+        nested_graph = as_graph_result(value)
         if nested_graph is not None:
             nested_component_log_path = (
                 self.state.get_component_log_path(step.id) or run_ctx.component_log_path
             )
-            await self._execute_graph(
-                run.nest(
+            await self._execute_compilation(
+                compile_graph(
                     nested_graph,
-                    component_log_path=nested_component_log_path,
-                ),
-                graph_label_path=label_path,
-                concurrency=concurrency,
-                ancestor_graph_scopes=(
-                    run.child_graph_scope(
-                        step,
-                        graph_step_ids=graph_step_ids,
+                    root_label=label_path[-1],
+                    parent_step_id=step.id,
+                    root_label_path=label_path,
+                    ancestor_graph_scopes=(
+                        run.child_graph_scope(
+                            step,
+                            graph_step_ids=graph_step_ids,
+                        ),
+                        *ancestor_graph_scopes,
                     ),
-                    *ancestor_graph_scopes,
                 ),
+                concurrency=concurrency,
+                component_log_path=nested_component_log_path,
             )
             self.state.record_result(step.id, None)
             self.state.complete_step(step.id)

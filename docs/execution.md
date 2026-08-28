@@ -1,43 +1,24 @@
 # 执行语义
 
-## Dynamic / Compiled 两种执行路径
+## Dynamic / Compiled 模式
 
-当前 `GraphPlan` 正式支持两条执行路径：
+`GraphPlan` 保留两个公开模式，但二者不再对应两套执行器：
 
 - dynamic
   - `GraphPlan.run(mode="dynamic")`
-  - 先对高层图做 `freeze_graph(...)`
-    - 只消掉 `StaticCondition`
-    - `RuntimeCondition` 继续保留给 runtime
-  - 将结果实例化为 `FrozenGraph`
-  - 每层 `FrozenGraph` 批量交给 Rust scheduler
-  - runtime 遇到 `FrozenStep.action is FrozenGraph` 时保持边界并递归进入下一层 Rust 调度
+  - 使用 Rust 声明编译器和 Rust execution session
+  - 为兼容结构视图，composite 同时记录到 `executed_steps/completed_steps`
+  - capability binding 与 compiled 模式使用同一 lowering
 - compiled
   - `GraphPlan.compile()`
   - `GraphPlan.run(mode="compiled")`
-  - 先执行 `freeze_graph(...)`
-  - compiler 把声明期已知子图的叶子全部展开
-  - 产生 `GraphCompilation`，不构造完整 Lowered Graph 或 `flat_graph: Graph`
-  - runtime 只把 `GraphCompilation.steps` 提交给 worker
-  - `GraphCompilation.composites` 在协调线程维护组合进入、完成、条件和 observation
+  - 使用同一个 Rust 声明编译器和 Rust execution session
+  - composite 只记录专门的进入与完成状态
+  - 支持 capability binding lowering
 
-两条路径并存，当前没有删除 dynamic runtime 的计划。
-
-两条路径的结构边界不同，但不再维护两套调度状态机：compiled 把声明期子图扁平化后
-一次调度；dynamic 按层物化浅图。二者的 ready、condition、skip、complete 和并发协调
-均由同一个 Rust `CompiledScheduler` 负责。
-
-runtime 当前的模式判定也已经显式化：
-
-- 公开执行入口接收：
-  - `FrozenGraph`
-  - `GraphCompilation`
-- 传 `FrozenGraph`
-  - 走 dynamic 执行
-- 传 `GraphCompilation`
-  - 走 compiled 执行
-
-也就是说，runtime 不再通过“某个可选参数是否为 `None`”来猜当前模式。
+正式 runtime 只接收 `GraphCompilation`。`FrozenGraph` 与 `freeze_graph()` 仍是公开的
+结构实例化 API，但不再承载另一套 Python 调度路径。action 在运行期返回的 `Graph`
+会携带父 step id、label path 与父结果作用域，再进入同一个编译执行流程。
 
 ## 条件执行
 
@@ -50,17 +31,8 @@ runtime 当前的模式判定也已经显式化：
 
 这里只保留执行层面的统一结论：
 
-- dynamic 路径：
-  - 先 freeze `StaticCondition`
-  - `ConditionalEdge.condition = RuntimeCondition`
-    - 由 runtime 原生求值
-  - `Step.when = RuntimeCondition`
-    - 由 runtime 原生求值
-    - 条件为假时，step 直接记为：
-      - `skipped`
-      - `finished`
-- compiled 路径：
-  - 先 freeze `StaticCondition`
+- 两种模式共同：
+  - Rust 编译器裁剪 `StaticCondition`
   - 运行时条件边编译为 `CompiledConditionalDependency`
   - step 级 runtime `when` 编译为 `CompiledRuntimeCondition`
   - 条件位于子图内部时，叶子仍然扁平化
@@ -177,15 +149,15 @@ action 日志端口。需要日志或执行视图时，宿主必须显式传入�
 
 1. 图必须是 DAG
 2. 按 `Graph.edges` 做拓扑执行
-3. dynamic 路径下，若图里仍有 `RuntimeCondition`：
+3. 若图里有 `RuntimeCondition`：
    - 条件边按运行期结果判定依赖是否生效
    - `Step.when` 按运行期结果判定当前节点是否启用
-4. dynamic 路径下，若 `Step.when=False`：
+4. 若 `Step.when=False`：
    - 该 step 直接视为不存在
    - 不等待自己的 prerequisite
    - 不进入子图 action
-5. dynamic 路径下，遇到 `step.action` 是 `Graph` 时递归执行完整子图
-6. compiled 路径通过 `CompiledScheduler` 调度扁平叶子，并用 `CompiledStep.context` 恢复声明作用域
+5. 声明期子图由 Rust 编译为 composite；运行期返回图重新进入同一编译器
+6. `ExecutionSession` 批量派发叶子，并用 `CompiledStep.context` 恢复声明作用域
 7. composite 只在协调线程维护生命周期，不提交给 worker，不写入 `executed_steps`
 8. 条件边保留为 `CompiledConditionalDependency`，不生成伪造的 gate step
 9. `GraphExecutionState` 可显式 skip 某个 step path
@@ -243,15 +215,7 @@ Graph 会把显式边和运行时条件读取投影为 `DirectedTopology`，再�
 
 父图中的 `step.action = subgraph` 是声明态组合节点。
 
-dynamic 模式执行到该 step 时：
-
-- 先进入子图
-- 完整执行子图
-- 子图全部完成后，父图才继续后续节点
-
-父图只把它看成一个节点；子图内部仍然是独立 DAG。
-
-compiled 模式会展开所有声明期已知子图：
+Rust compiler 会转换所有声明期已知子图：
 
 - 叶子 action 进入全局扁平执行集合
 - 原子图边界变成非执行的 `CompiledComposite`
@@ -260,9 +224,9 @@ compiled 模式会展开所有声明期已知子图：
 - 空 composite 激活后立即完成
 - `GraphObserve.before/after_success` 挂在 composite 生命周期上
 
-因此增加 runtime condition、条件边或 observation 不会改变执行模型。只有
-action 在运行期返回的 `Graph` 无法提前编译，仍会从该叶子路径进入显式
-dynamic 边界。
+因此增加 runtime condition、条件边或 observation 不会改变执行模型。action 在
+运行期返回的 `Graph` 无法提前编译；返回后会以当前叶子路径为显式输入，建立一个
+嵌套 compilation 与 execution session。
 
 对子图中的 action 来说，runtime 当前还会显式补齐：
 
@@ -302,7 +266,7 @@ dynamic 边界。
 - 失败即停止派发新的 ready step
 - 已经在跑的 step 等自然结束
 - 异步后端不会取消已经创建并开始运行的 task
-- 组合 step 的子图仍通过递归 graph runtime 执行
+- 运行期返回图通过嵌套 compilation/session 执行
 
 不要依赖两个互不相干 Step 的隐式顺序；如果顺序有业务意义，必须通过
 `Step.wire(after=...)`、Graph edge 或 `>>` 显式声明。
@@ -315,7 +279,7 @@ Graph 已提供线程与异步两种受控调度后端，但仍保持以下边�
 - 只调度拓扑上已经 ready 的节点
 - 失败后停止派发新节点
 - 已经开始执行的同步 worker 或异步 task 不会被 Graph 强制取消
-- dynamic 子图通过递归 runtime 执行，不共享跨层级的全局 ready 队列
+- 运行期返回图的嵌套 session 暂不共享外层 session 的全局 ready 队列
 - action 对宿主共享状态的并发写入安全由宿主负责
 
 因此 Graph 提供的是 DAG 调度并发，不是宿主资源、进程或事务的全局并发管理器。

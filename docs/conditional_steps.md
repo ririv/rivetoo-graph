@@ -93,7 +93,7 @@ Step(
 
 - 这条条件只能在运行时根据 step result 判定
 
-dynamic 路径下：
+运行时：
 
 - 条件还没准备好
   - step 暂时 not ready
@@ -164,26 +164,17 @@ A --[condition]--> B
 
 - `B` 这个节点是否存在
 
-## Dynamic 路径
+## 执行路径
 
-位置：
-
-- `rivetoo-graph/src/rivetoo_graph/runtime/dynamic.py`
-
-当前 dynamic 路径里和条件 step 相关的关键点是：
-
-- `DynamicGraphScheduling.materialize(...)`
-  - 把当前一层 `FrozenGraph` 的 prerequisite、condition 和 reads 批量映射成 Rust 输入
-- `NativeDynamicSchedulerHost`
-  - 只在 predicate、action、结果和停止控制边界回调 Python
-- Rust `CompiledScheduler`
-  - 统一维护 `PENDING`、`DISABLED`、`READY` 与条件缓存
+两种公开 mode 都先由 Rust 声明编译器把 `Step.when` 转换成节点 activation，再由
+Rust `ExecutionSession` 维护 pending、ready、running、skipped 与条件缓存。Python
+只在 session 批量请求时求值 predicate，并把结果通过 `advance(...)` 交回。
 
 这里的关键语义是：
 
 - 条件为假时，step 不再等待自己的 `after`
 - 因为“视为不存在”的 step 不应再阻塞下游
-- 每层子图保持独立调度边界，不会为了复用 compiled scheduler 而隐式展开
+- composite 保留声明期子图边界，不会被伪装成 no-op leaf
 
 ## Compiled 路径
 
@@ -191,19 +182,15 @@ A --[condition]--> B
 
 - `rivetoo-graph/src/rivetoo_graph/compile.py`
 
-compiled 路径分两个对外阶段：
+`freeze_graph(...)` 仍可独立用于结构实例化；正式执行则直接调用 `compile_graph(...)`。
+条件 step 在编译中的处理是：
 
-1. `freeze_graph(...)`
-2. `compile_graph(...)`
-
-条件 step 在这三步中的处理是：
-
-### freeze
+### 静态裁剪
 
 - `StaticCondition`
   - 直接裁掉或清空
 
-### compile 内部 lowering
+### 内部 lowering
 
 - `ConditionalEdge`
   - 归一化成 `CompiledConditionalDependency`
@@ -211,7 +198,7 @@ compiled 路径分两个对外阶段：
   - 不会被改写成条件边
   - 归一化成节点自身的 `CompiledRuntimeCondition`
 
-### compile 结构转换
+### 结构转换
 
 - 所有声明期已知 graph step 都递归展开叶子
 - graph step 自身变成非执行的 `CompiledComposite`

@@ -201,14 +201,13 @@ A.3 ── capability 123 ──> B.b
 A 和 B 的子图边界仍然保留；不会为了接线而展开声明图，也不会把整个 A 的完成状态
 作为整个 B 的启动条件。
 
-跨子图能力绑定依赖全局编译调度，因此当前必须显式使用：
+跨子图能力绑定依赖全局编译调度。两种公开 mode 现在都进入同一个 Rust compiler，
+因此以下两种写法使用同一份 binding lowering：
 
 ```python
 GraphPlan(label="root", graph=graph).run(mode="compiled")
+GraphPlan(label="root", graph=graph).run(mode="dynamic")
 ```
-
-`dynamic` 模式保持层级递归调度，不能正确表达跨子图内部节点的依赖，因此会明确拒绝
-包含能力绑定的图，而不是退化成整张子图依赖。
 
 ## Rust 迁移边界
 

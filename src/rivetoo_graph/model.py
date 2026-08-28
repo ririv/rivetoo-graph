@@ -485,7 +485,7 @@ class Graph:
     它不表达的是：
     - 图挂载后的结构身份
     - 这次执行的 results / skip 状态
-    - dynamic / compiled 的具体执行模式
+    - GraphPlan 的展示与 composite 记录模式
     """
 
     label: str | None = None

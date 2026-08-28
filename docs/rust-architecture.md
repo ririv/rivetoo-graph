@@ -27,6 +27,10 @@
   - 独占 PyO3 依赖
   - 把 Python 声明对象批量转换成连续整数 ID
   - 把条件 predicate、leaf action、观察事件和宿主停止控制接回 Python
+- `crates/tokio-runtime`
+  - 私有实验 crate，不属于正式 API
+  - 独占 Tokio 依赖，用于测量“Rust runtime 逐 action 回调 Python”的成本
+  - 只通过项目自己的 `CallbackHost` 接口消费 core，不向领域模型泄漏 Tokio 类型
 
 core 的公开数据模型不出现 PyO3 或其它第三方库类型。
 
@@ -52,14 +56,18 @@ executor adapter crate
 
 ## 当前执行边界
 
-当前 compiled 与 dynamic 路径共享同一个 Rust scheduler：
+所有正式执行路径共享同一个 Rust 声明编译器和 execution session：
 
 ```text
-Python Graph
-    │ freeze 与层级结构收集
+Python Graph 声明
+    │ 单次 PyO3 编译调用
     ▼
-Python GraphCompilation 元数据
-    │ 一次批量转换
+Rust GraphDeclaration
+    ├── 静态节点裁剪
+    ├── 层级与声明作用域收集
+    ├── capability binding 解析
+    └── 条件与 prerequisite 投影
+    │
     ▼
 Rust CompiledExecutionGraph
     ├── 层级 ExecutionGraphDeclaration lowering
@@ -72,24 +80,50 @@ Rust CompiledExecutionGraph
     └── DAG 校验
     │
     ▼
-Rust CompiledScheduler
-    ├── 串行协调
-    ├── 标准库线程 worker 协调
-    └── asyncio leaf 调度协调
+Rust ExecutionSession
+    ├── start(max_actions) → 第一批 action / condition / event
+    └── advance(update, max_actions) → 下一批工作或完成
+    │
+    ▼
+Python action executor
+    ├── 串行调用
+    ├── ThreadPoolExecutor
+    └── asyncio task
 ```
 
-Python 不再调用 `take_ready`、`complete` 等细粒度原生方法。每次 compiled run 只进入
-一次 Rust 调度入口；Rust 只在以下真实宿主边界回调 Python：
+Rust 不逐节点反向调用 Python。Python 只在有状态变化时通过 `start/advance` 与 session
+交换一批数据：
 
-- 求值不透明的运行时 predicate
-- 执行 Python leaf action
-- 记录组合生命周期和观察事件
-- 读取或写入宿主停止控制
+- Rust 批量返回 ready action、待求值 predicate 和组合生命周期 event
+- Python 执行任意 callable，并把完成节点、predicate 结果和显式 skip 批量交回 Rust
+- 没有 timer polling；没有工作时，线程或 asyncio executor 等待实际 action 完成
 
-dynamic 路径不会展开子图边界。每层 `FrozenGraph` 会批量物化成一个浅层 Rust 调度图；
-图 action 作为该层 leaf 由 Python 回调递归进入下一层，下一层再独立进入 Rust scheduler。
-因此运行期返回的图不需要伪装成声明期 compiled 节点，但 ready 队列、条件缓存、依赖
-刷新和串行/线程协调都不再由 Python 实现。
+声明期已知子图由 Rust 编译为 composite 与 leaf；子图边界不会被隐式删除。action 在
+运行期返回的新 `Graph` 无法提前编译，因此会以当前 step id、label path 和父作用域作为
+显式输入，再次进入同一个 Rust 编译器与 session，而不是回到 Python dynamic scheduler。
+
+`mode="dynamic"` 与 `mode="compiled"` 目前保留的是兼容的展示和 composite 记录语义，
+不再代表两套执行引擎。capability binding 在两种模式下进入同一 lowering。
+
+## 运行时实验结论
+
+Tokio 实验位于 `crates/tokio-runtime`，入口只在 `_native` 中以私有名称暴露；正式
+executor 不依赖它。`benchmarks/runtime_drivers.py` 使用同一张图和同一组零成本 Python
+action，对比：
+
+- 正式方案：Rust 批量返回 ready，Python 执行后批量 `advance`
+- 实验方案：Tokio `spawn_blocking`，每个 action 通过 PyO3 反向调用 Python
+
+2026-08-28 在 CPython 3.13（GIL 启用）、macOS arm64、release 原生扩展上，2,000 个
+独立空 action、8 worker、5 次采样的中位数为：
+
+- batch：约 0.321 秒
+- Tokio callback：约 1.280 秒
+- Tokio callback / batch：约 3.98 倍
+
+该基准专门放大调度边界成本，不代表真实构建耗时比例；真实 action 较重时差距会被
+稀释。但它足以否决“为 Python callable 引入逐 action Tokio/PyO3 往返会更快”的假设。
+Tokio 仍保留为可重复实验，正式路径选择事件驱动批量协议。
 
 ## 唯一事实来源
 
@@ -155,7 +189,8 @@ requirement 与 selection 映射成连续整数 ID。provider 索引、任意 pr
 
 - 静态条件叶子和运行时条件 predicate 是 Python callable
 - action、结果对象、observe、日志路径和展示 label 是 Python 对象
-- freeze 负责求值静态业务条件，并建立这些对象到稳定整数 ID 的侧表
+- PyO3 adapter 在一次编译调用中遍历声明对象；静态 predicate 的业务求值仍调用 Python
+- Python `GraphCompilation` 只恢复 action、predicate、observe、label path 与结果作用域侧表
 - `GraphExecutionState` 保存可供 Python action 动态写入的 skip、结果与渲染快照
 
 ready 队列、节点状态机、条件阻塞、层级生命周期、执行 DAG 校验、capability provider

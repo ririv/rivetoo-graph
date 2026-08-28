@@ -136,15 +136,12 @@ class GraphPlan:
         from .runtime import AsyncGraphExecutor, ParallelGraphExecutor
 
         self.execution_control.require_running()
+        target_graph = self.compile()
         match mode:
             case "dynamic":
-                target_graph: FrozenGraph | GraphCompilation = self.freeze()
-                if target_graph.requires_compiled_execution:
-                    raise GraphError(
-                        "graph capability bindings require compiled execution mode"
-                    )
+                pass
             case "compiled":
-                target_graph = self.compile()
+                pass
             case _:
                 raise GraphError(f"unsupported graph mode: {mode}")
 
@@ -163,6 +160,7 @@ class GraphPlan:
                     execution_control=self.execution_control,
                     observer=run_options.observer,
                     action_log=self.action_log,
+                    record_composites_as_steps=mode == "dynamic",
                 ).execute(
                     target_graph,
                     concurrency=run_options.concurrency,
@@ -173,6 +171,7 @@ class GraphPlan:
                     execution_control=self.execution_control,
                     observer=run_options.observer,
                     action_log=self.action_log,
+                    record_composites_as_steps=mode == "dynamic",
                 ).execute(
                     target_graph,
                     workers=run_options.workers,

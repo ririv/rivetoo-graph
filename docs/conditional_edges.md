@@ -8,11 +8,8 @@
 - 条件分成：
   - `StaticCondition`
   - `RuntimeCondition`
-- dynamic 路径支持原生运行期条件求值
-- compiled 路径支持：
-  - `freeze`
-  - compiler 内部 lowering
-  - 将当前编译作用域收成普通 DAG
+- Rust compiler 支持静态条件裁剪与运行时条件 lowering
+- Rust execution session 支持运行期条件批量求值
 
 但业务层目前还没有正式把现有图迁到条件边模型上。  
 这份文档描述的是：
@@ -478,15 +475,11 @@ graph TD
 
 一个 step 可以同时有多条条件边，而每条边读取的结果可能都不同。
 
-## Dynamic 路径如何处理条件边
+## 执行时如何处理条件边
 
-dynamic 路径当前流程是：
-
-1. 先 `freeze_graph(...)`
-   - 消掉全部 `StaticCondition`
-2. runtime 继续原生求值 `RuntimeCondition`
-
-这意味着 dynamic runtime 当前只会看到：
+正式执行由 Rust 声明编译器先消掉全部 `StaticCondition`，再把
+`RuntimeCondition` 编译为带 condition id 的 prerequisite。Rust execution session
+只会看到：
 
 - 普通边
 - `RuntimeCondition`
@@ -497,7 +490,7 @@ dynamic 路径当前流程是：
 
 如果还能看到，说明 freeze 没做对，是 bug。
 
-因此，dynamic runtime 当前的正式边界是：
+因此，runtime 的正式边界是：
 
 - 它只处理：
   - 普通边
@@ -507,15 +500,12 @@ dynamic 路径当前流程是：
 
 ## Compiled 路径如何处理条件边
 
-compiled 路径当前流程是：
-
-1. 先 `freeze_graph(...)`
-2. `compile_graph(...)` 把运行时条件边归一化成 `CompiledConditionalDependency`
-3. 同一次 compile 完成子图叶子展开和组合生命周期建模
+`compile_graph(...)` 在同一次原生调用中完成静态裁剪、运行时条件边归一化、子图
+结构编译和组合生命周期建模。
 
 也就是说：
 
-- 静态条件边在 freeze 后消失
+- 静态条件边在编译后消失
 - 运行期条件边作为 compiled prerequisite 保留
 - 不新增 action、step 或 worker 任务
 - 子图内部使用相同模型，不切换回另一套动态图执行

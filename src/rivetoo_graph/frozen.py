@@ -68,8 +68,8 @@ class FrozenStep:
 class FrozenGraph:
     """静态条件已裁剪的层级 DAG。
 
-    不含跨子图能力绑定时可以直接交给 dynamic runtime；能力绑定需要
-    compiler 先把端口引用 lower 为全局节点依赖。
+    该结构用于独立检查和展示；正式执行统一由 compiler 把声明图转换为
+    `GraphCompilation`，不会直接调度 `FrozenGraph`。
     """
 
     source_graph: Graph

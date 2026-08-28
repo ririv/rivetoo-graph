@@ -1,22 +1,117 @@
 //! Python adapter for the Rust graph core.
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+mod declaration;
+mod experiment;
+
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rivetoo_graph::{
     Arc as TopologyArc, CapabilityBinding, CapabilityId, CapabilityRequirement,
-    CompiledExecutionGraph as CoreCompiledExecutionGraph, CompiledScheduler, ComponentId,
-    ConditionId, DagTopology, DeclaredGraph, DeclaredNode, DirectedTopology,
-    ExecutionGraphDeclaration, GraphId, NodeId, Prerequisite, ProviderSelection, RequirementId,
-    RuntimeCondition, SchedulerError, SchedulerHost, TopologyError, resolve_capabilities,
+    CompiledExecutionGraph as CoreCompiledExecutionGraph, ComponentId, ConditionId,
+    ConditionResolution, DagTopology, DeclaredGraph, DeclaredNode, DirectedTopology,
+    ExecutionBatch, ExecutionEvent, ExecutionGraphDeclaration, ExecutionSession, ExecutionUpdate,
+    GraphId, NodeId, Prerequisite, ProviderSelection, RequirementId, RuntimeCondition,
+    SessionStatus, TopologyError, resolve_capabilities,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
+use std::sync::Arc;
 
 /// Rust-owned structural execution graph.
-#[pyclass(frozen, module = "rivetoo_graph._native")]
+#[derive(Clone)]
+#[pyclass(frozen, module = "rivetoo_graph._native", skip_from_py_object)]
 struct NativeCompiledExecutionGraph {
-    graph: Arc<CoreCompiledExecutionGraph>,
+    pub(crate) graph: Arc<CoreCompiledExecutionGraph>,
+}
+
+#[pyclass(frozen, module = "rivetoo_graph._native")]
+struct NativeExecutionBatch {
+    actions: Vec<usize>,
+    conditions: Vec<(usize, usize)>,
+    events: Vec<(u8, usize, Option<bool>)>,
+    finished: bool,
+}
+
+impl From<ExecutionBatch> for NativeExecutionBatch {
+    fn from(batch: ExecutionBatch) -> Self {
+        Self {
+            actions: batch.actions().iter().map(|node| node.index()).collect(),
+            conditions: batch
+                .conditions()
+                .iter()
+                .map(|request| (request.node().index(), request.condition().index()))
+                .collect(),
+            events: batch.events().iter().map(encode_event).collect(),
+            finished: batch.status() == SessionStatus::Finished,
+        }
+    }
+}
+
+#[pymethods]
+impl NativeExecutionBatch {
+    #[allow(clippy::type_complexity)]
+    fn parts(
+        &self,
+    ) -> (
+        Vec<usize>,
+        Vec<(usize, usize)>,
+        Vec<(u8, usize, Option<bool>)>,
+        bool,
+    ) {
+        (
+            self.actions.clone(),
+            self.conditions.clone(),
+            self.events.clone(),
+            self.finished,
+        )
+    }
+}
+
+#[pyclass(module = "rivetoo_graph._native")]
+struct NativeExecutionSession {
+    session: ExecutionSession,
+}
+
+#[pymethods]
+impl NativeExecutionSession {
+    fn start(&mut self, max_actions: usize) -> PyResult<NativeExecutionBatch> {
+        self.session
+            .start(max_actions)
+            .map(NativeExecutionBatch::from)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (completed, conditions, skipped, max_actions))]
+    fn advance(
+        &mut self,
+        completed: Vec<usize>,
+        conditions: Vec<(usize, bool)>,
+        skipped: Vec<usize>,
+        max_actions: usize,
+    ) -> PyResult<NativeExecutionBatch> {
+        self.session
+            .advance(
+                ExecutionUpdate::new(
+                    completed.into_iter().map(NodeId::new),
+                    conditions.into_iter().map(|(condition, value)| {
+                        ConditionResolution::new(ConditionId::new(condition), value)
+                    }),
+                    skipped.into_iter().map(NodeId::new),
+                ),
+                max_actions,
+            )
+            .map(NativeExecutionBatch::from)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+}
+
+fn encode_event(event: &ExecutionEvent) -> (u8, usize, Option<bool>) {
+    match *event {
+        ExecutionEvent::ConditionEvaluated { node, value } => (0, node.index(), Some(value)),
+        ExecutionEvent::ConditionSkipped(node) => (1, node.index(), None),
+        ExecutionEvent::CompositeEntered(node) => (2, node.index(), None),
+        ExecutionEvent::CompositeCompleted(node) => (3, node.index(), None),
+        ExecutionEvent::NodeSkipped(node) => (4, node.index(), None),
+    }
 }
 
 /// Validates one complete DAG projection and returns its cycle when present.
@@ -235,284 +330,31 @@ impl NativeCompiledExecutionGraph {
             .collect()
     }
 
+    fn when_conditions(&self) -> Vec<Option<usize>> {
+        self.graph
+            .nodes()
+            .iter()
+            .map(|node| node.when().map(ConditionId::index))
+            .collect()
+    }
+
     fn topological_order(&self) -> Vec<usize> {
         node_indexes(self.graph.dependency_topology().topological_order())
     }
 
-    fn run_serial(&self, host: &Bound<'_, PyAny>) -> PyResult<()> {
-        let mut scheduler = CompiledScheduler::new(Arc::clone(&self.graph));
-        let mut scheduler_host = PythonSchedulerHost { host };
-        scheduler
-            .start(&mut scheduler_host)
-            .map_err(scheduler_error)?;
-        while !scheduler.is_finished() {
-            let Some(node) = scheduler
-                .take_ready_leaf(&mut scheduler_host)
-                .map_err(scheduler_error)?
-            else {
-                scheduler
-                    .require_finished::<PyErr>()
-                    .map_err(scheduler_error)?;
-                break;
-            };
-            scheduler_host.run_leaf(node)?;
-            scheduler
-                .complete_leaf(node, &mut scheduler_host)
-                .map_err(scheduler_error)?;
-        }
-        scheduler
-            .require_finished::<PyErr>()
-            .map_err(scheduler_error)
-    }
-
-    fn run_threaded(&self, py: Python<'_>, host: Py<PyAny>, workers: usize) -> PyResult<()> {
-        if workers == 0 {
-            return Err(PyValueError::new_err("graph workers must be >= 1"));
-        }
-        let graph = Arc::clone(&self.graph);
-        py.detach(move || run_threaded(graph, &host, workers))
+    fn session(&self, initially_skipped: Vec<usize>) -> PyResult<NativeExecutionSession> {
+        Ok(NativeExecutionSession {
+            session: ExecutionSession::new(
+                Arc::clone(&self.graph),
+                initially_skipped.into_iter().map(NodeId::new),
+            )
+            .map_err(|error| PyValueError::new_err(error.to_string()))?,
+        })
     }
 }
 
 fn node_indexes(nodes: &[NodeId]) -> Vec<usize> {
     nodes.iter().map(|node| node.index()).collect()
-}
-
-struct PythonSchedulerHost<'py> {
-    host: &'py Bound<'py, PyAny>,
-}
-
-impl PythonSchedulerHost<'_> {
-    fn run_leaf(&self, node: NodeId) -> PyResult<()> {
-        self.host.call_method1("run_leaf", (node.index(),))?;
-        Ok(())
-    }
-}
-
-impl SchedulerHost for PythonSchedulerHost<'_> {
-    type Error = PyErr;
-
-    fn is_skipped(&mut self, node: NodeId) -> Result<bool, Self::Error> {
-        self.host
-            .call_method1("is_skipped", (node.index(),))?
-            .extract()
-    }
-
-    fn evaluate_condition(
-        &mut self,
-        node: NodeId,
-        condition: ConditionId,
-    ) -> Result<bool, Self::Error> {
-        self.host
-            .call_method1("evaluate_condition", (node.index(), condition.index()))?
-            .extract()
-    }
-
-    fn record_condition(&mut self, node: NodeId, value: bool) -> Result<(), Self::Error> {
-        self.host
-            .call_method1("record_condition", (node.index(), value))?;
-        Ok(())
-    }
-
-    fn record_condition_skip(&mut self, node: NodeId) -> Result<(), Self::Error> {
-        self.host
-            .call_method1("record_condition_skip", (node.index(),))?;
-        Ok(())
-    }
-
-    fn enter_composite(&mut self, node: NodeId) -> Result<(), Self::Error> {
-        self.host.call_method1("enter_composite", (node.index(),))?;
-        Ok(())
-    }
-
-    fn complete_composite(&mut self, node: NodeId) -> Result<(), Self::Error> {
-        self.host
-            .call_method1("complete_composite", (node.index(),))?;
-        Ok(())
-    }
-}
-
-fn scheduler_error(error: SchedulerError<PyErr>) -> PyErr {
-    match error {
-        SchedulerError::Host(error) => error,
-        other => PyValueError::new_err(other.to_string()),
-    }
-}
-
-fn run_threaded(
-    graph: Arc<CoreCompiledExecutionGraph>,
-    host: &Py<PyAny>,
-    workers: usize,
-) -> PyResult<()> {
-    let mut scheduler = CompiledScheduler::new(graph);
-    let mut scheduler_host = OwnedPythonSchedulerHost { host };
-    scheduler
-        .start(&mut scheduler_host)
-        .map_err(scheduler_error)?;
-
-    thread::scope(|scope| -> PyResult<()> {
-        let (work_sender, work_receiver) = mpsc::channel::<NodeId>();
-        let work_receiver = Arc::new(Mutex::new(work_receiver));
-        let (result_sender, result_receiver) = mpsc::channel::<(NodeId, PyResult<()>)>();
-
-        for _ in 0..workers {
-            let work_receiver = Arc::clone(&work_receiver);
-            let result_sender = result_sender.clone();
-            scope.spawn(move || {
-                loop {
-                    let Ok(node) = work_receiver
-                        .lock()
-                        .expect("graph work receiver lock was poisoned")
-                        .recv()
-                    else {
-                        break;
-                    };
-                    let result = Python::attach(|py| {
-                        host.bind(py).call_method1("run_leaf", (node.index(),))?;
-                        Ok(())
-                    });
-                    if result_sender.send((node, result)).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(result_sender);
-
-        let mut inflight = 0_usize;
-        let mut failure: Option<PyErr> = None;
-        loop {
-            while failure.is_none() && !scheduler_host.stop_requested()? && inflight < workers {
-                let Some(node) = scheduler
-                    .take_ready_leaf(&mut scheduler_host)
-                    .map_err(scheduler_error)?
-                else {
-                    break;
-                };
-                work_sender
-                    .send(node)
-                    .map_err(|_| PyRuntimeError::new_err("graph worker channel closed"))?;
-                inflight += 1;
-            }
-
-            if inflight == 0 {
-                if let Some(error) = failure {
-                    return Err(error);
-                }
-                scheduler_host.require_running()?;
-                scheduler
-                    .require_finished::<PyErr>()
-                    .map_err(scheduler_error)?;
-                break;
-            }
-
-            let (node, result) = result_receiver
-                .recv()
-                .map_err(|_| PyRuntimeError::new_err("all graph workers stopped"))?;
-            inflight -= 1;
-            match result {
-                Ok(()) if failure.is_none() => scheduler
-                    .complete_leaf(node, &mut scheduler_host)
-                    .map_err(scheduler_error)?,
-                Ok(()) => {}
-                Err(error) => {
-                    if failure.is_none() {
-                        scheduler_host.request_stop()?;
-                        failure = Some(error);
-                    }
-                }
-            }
-        }
-
-        scheduler_host.require_running()?;
-        Ok(())
-    })
-}
-
-struct OwnedPythonSchedulerHost<'py> {
-    host: &'py Py<PyAny>,
-}
-
-impl OwnedPythonSchedulerHost<'_> {
-    fn stop_requested(&self) -> PyResult<bool> {
-        Python::attach(|py| self.host.bind(py).call_method0("stop_requested")?.extract())
-    }
-
-    fn request_stop(&self) -> PyResult<()> {
-        Python::attach(|py| {
-            self.host.bind(py).call_method0("request_stop")?;
-            Ok(())
-        })
-    }
-
-    fn require_running(&self) -> PyResult<()> {
-        Python::attach(|py| {
-            self.host.bind(py).call_method0("require_running")?;
-            Ok(())
-        })
-    }
-}
-
-impl SchedulerHost for OwnedPythonSchedulerHost<'_> {
-    type Error = PyErr;
-
-    fn is_skipped(&mut self, node: NodeId) -> Result<bool, Self::Error> {
-        Python::attach(|py| {
-            self.host
-                .bind(py)
-                .call_method1("is_skipped", (node.index(),))?
-                .extract()
-        })
-    }
-
-    fn evaluate_condition(
-        &mut self,
-        node: NodeId,
-        condition: ConditionId,
-    ) -> Result<bool, Self::Error> {
-        Python::attach(|py| {
-            self.host
-                .bind(py)
-                .call_method1("evaluate_condition", (node.index(), condition.index()))?
-                .extract()
-        })
-    }
-
-    fn record_condition(&mut self, node: NodeId, value: bool) -> Result<(), Self::Error> {
-        Python::attach(|py| {
-            self.host
-                .bind(py)
-                .call_method1("record_condition", (node.index(), value))?;
-            Ok(())
-        })
-    }
-
-    fn record_condition_skip(&mut self, node: NodeId) -> Result<(), Self::Error> {
-        Python::attach(|py| {
-            self.host
-                .bind(py)
-                .call_method1("record_condition_skip", (node.index(),))?;
-            Ok(())
-        })
-    }
-
-    fn enter_composite(&mut self, node: NodeId) -> Result<(), Self::Error> {
-        Python::attach(|py| {
-            self.host
-                .bind(py)
-                .call_method1("enter_composite", (node.index(),))?;
-            Ok(())
-        })
-    }
-
-    fn complete_composite(&mut self, node: NodeId) -> Result<(), Self::Error> {
-        Python::attach(|py| {
-            self.host
-                .bind(py)
-                .call_method1("complete_composite", (node.index(),))?;
-            Ok(())
-        })
-    }
 }
 
 /// Native implementation details used by the Python package.
@@ -521,6 +363,11 @@ impl SchedulerHost for OwnedPythonSchedulerHost<'_> {
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(dag_cycle, module)?)?;
     module.add_function(wrap_pyfunction!(resolve_capability_bindings, module)?)?;
+    module.add_function(wrap_pyfunction!(declaration::compile_declaration, module)?)?;
+    module.add_function(wrap_pyfunction!(experiment::run_tokio_callbacks, module)?)?;
     module.add_class::<NativeCompiledExecutionGraph>()?;
+    module.add_class::<declaration::NativeDeclarationCompilation>()?;
+    module.add_class::<NativeExecutionBatch>()?;
+    module.add_class::<NativeExecutionSession>()?;
     Ok(())
 }

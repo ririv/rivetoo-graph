@@ -5,13 +5,12 @@ import logging
 import threading
 from typing import TYPE_CHECKING
 
-from ..frozen import FrozenGraph, freeze_graph
-from ..model import Graph, StepId, StepLabelPath
+from ..model import Graph, StepLabelPath
 from ..observe import GraphObservationEvent, GraphObservationPhase, GraphObserver
 
 if TYPE_CHECKING:
     from ..results import GraphResultStore
-    from .run import GraphRunLike
+    from .run import CompiledGraphRun
     from .state import GraphExecutionState
 
 logger = logging.getLogger(__name__)
@@ -27,18 +26,11 @@ async def await_result(result: object) -> object:
 
 def as_graph_result(
     value: object,
-    *,
-    parent_step_id: StepId,
-    default_label: str,
-) -> FrozenGraph | None:
-    """把 action 在运行期返回的声明图冻结成动态子图。"""
+) -> Graph | None:
+    """识别 action 在运行期返回的声明图。"""
 
     if isinstance(value, Graph):
-        return freeze_graph(
-            value,
-            root_label=default_label,
-            parent_step_id=parent_step_id,
-        )
+        return value
     return None
 
 
@@ -64,7 +56,7 @@ def emit_graph_observation(
     *,
     observer: GraphObserver | None,
     state: GraphExecutionState,
-    graph: GraphRunLike,
+    graph: CompiledGraphRun,
     label_path: StepLabelPath,
     phase: GraphObservationPhase,
 ) -> None:

@@ -5,16 +5,15 @@ import threading
 import traceback
 from typing import TYPE_CHECKING
 
-from ..compile import GraphCompilation
+from ..compile import CompiledStep, GraphCompilation, compile_graph
 from ..errors import GraphError
-from ..frozen import FrozenGraph
 from ..observe import GraphObservationPhase, GraphObserver
 from .action_log import (
     NO_GRAPH_ACTION_LOG,
     GraphActionLog,
 )
-from .compiled import NativeCompiledSchedulerHost
-from .dynamic import DynamicGraphScheduling, NativeDynamicSchedulerHost
+from .batch_driver import run_threaded_session
+from .compiled import CompiledExecutionHost
 from .executor_common import (
     as_graph_result,
     await_result,
@@ -23,16 +22,14 @@ from .executor_common import (
 )
 from .run import (
     CompiledGraphRun,
-    DynamicGraphRun,
     ExecutableGraph,
-    ExecutableStep,
-    GraphRunLike,
     RuntimeStep,
 )
 from .state import GraphExecutionState
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     from ..model import Step, StepId, StepLabelPath
     from ..results import GraphScope, StepRunContext
@@ -53,11 +50,13 @@ class ParallelGraphExecutor:
         execution_control: GraphExecutionControl,
         observer: GraphObserver | None = None,
         action_log: GraphActionLog = NO_GRAPH_ACTION_LOG,
+        record_composites_as_steps: bool = False,
     ) -> None:
         self.state = state or GraphExecutionState()
         self.execution_control = execution_control
         self.observer = observer
         self.action_log = action_log
+        self.record_composites_as_steps = record_composites_as_steps
 
     def execute(
         self,
@@ -67,15 +66,7 @@ class ParallelGraphExecutor:
     ) -> GraphExecutionState:
         self.execution_control.require_running()
         self.state.begin_run()
-        match graph:
-            case GraphCompilation():
-                self._execute_compilation(graph, workers=workers)
-            case FrozenGraph():
-                self._execute_graph(
-                    DynamicGraphRun(graph),
-                    graph_label_path=(),
-                    workers=workers,
-                )
+        self._execute_compilation(graph, workers=workers)
         return self.state
 
     def _execute_compilation(
@@ -83,20 +74,25 @@ class ParallelGraphExecutor:
         compilation: GraphCompilation,
         *,
         workers: int,
+        component_log_path: Path | None = None,
     ) -> None:
-        run = CompiledGraphRun(compilation=compilation)
+        run = CompiledGraphRun(
+            compilation=compilation,
+            component_log_path=component_log_path,
+        )
         emit_graph_observation(
             observer=self.observer,
             state=self.state,
             graph=run,
-            label_path=(),
+            label_path=compilation.root_label_path,
             phase=GraphObservationPhase.BEFORE,
         )
-        scheduler_host = NativeCompiledSchedulerHost(
+        execution_host = CompiledExecutionHost(
             compilation,
             self.state,
             observer=self.observer,
             execution_control=self.execution_control,
+            record_composites_as_steps=self.record_composites_as_steps,
             run_leaf=lambda step: self._run_step(
                 run,
                 step,
@@ -107,66 +103,25 @@ class ParallelGraphExecutor:
             ),
         )
         try:
-            compilation._native_graph.run_threaded(scheduler_host, workers)
+            run_threaded_session(
+                compilation._native_graph,
+                execution_host,
+                workers=workers,
+            )
         except ValueError as exc:
             raise GraphError(str(exc)) from exc
         emit_graph_observation(
             observer=self.observer,
             state=self.state,
             graph=run,
-            label_path=(),
-            phase=GraphObservationPhase.AFTER_SUCCESS,
-        )
-
-    def _execute_graph(
-        self,
-        run: DynamicGraphRun,
-        *,
-        graph_label_path: StepLabelPath,
-        workers: int,
-        ancestor_graph_scopes: tuple[GraphScope, ...] = (),
-    ) -> None:
-        emit_graph_observation(
-            observer=self.observer,
-            state=self.state,
-            graph=run,
-            label_path=graph_label_path,
-            phase=GraphObservationPhase.BEFORE,
-        )
-        scheduling = DynamicGraphScheduling.materialize(
-            run,
-            graph_label_path=graph_label_path,
-            ancestor_graph_scopes=ancestor_graph_scopes,
-        )
-        scheduler_host = NativeDynamicSchedulerHost(
-            scheduling,
-            self.state,
-            execution_control=self.execution_control,
-            run_leaf=lambda step: self._run_step(
-                run,
-                step,
-                scheduling.label_path(step),
-                workers,
-                scheduling.graph_step_ids,
-                scheduling.ancestor_graph_scopes,
-            ),
-        )
-        try:
-            scheduling.native_graph.run_threaded(scheduler_host, workers)
-        except ValueError as exc:
-            raise GraphError(str(exc)) from exc
-        emit_graph_observation(
-            observer=self.observer,
-            state=self.state,
-            graph=run,
-            label_path=graph_label_path,
+            label_path=compilation.root_label_path,
             phase=GraphObservationPhase.AFTER_SUCCESS,
         )
 
     def _run_step(
         self,
-        run: GraphRunLike,
-        step: ExecutableStep,
+        run: CompiledGraphRun,
+        step: CompiledStep,
         label_path: StepLabelPath,
         workers: int,
         graph_step_ids: Mapping[Step, StepId],
@@ -179,27 +134,6 @@ class ParallelGraphExecutor:
         run_ctx: StepRunContext | None = None
         try:
             action = step.action
-            if isinstance(action, FrozenGraph):
-                self._execute_graph(
-                    run.nest(
-                        action,
-                        component_log_path=(
-                            self.state.get_component_log_path(step.id)
-                            or run.component_log_path
-                        ),
-                    ),
-                    graph_label_path=label_path,
-                    workers=workers,
-                    ancestor_graph_scopes=(
-                        run.child_graph_scope(
-                            step,
-                            graph_step_ids=graph_step_ids,
-                        ),
-                        *ancestor_graph_scopes,
-                    ),
-                )
-                self.state.complete_step(step.id)
-                return
             runtime_step = RuntimeStep(
                 step=step,
                 label_path=label_path,
@@ -220,30 +154,28 @@ class ParallelGraphExecutor:
             else:
                 with self.action_log.scope(run_ctx.component_log_path):
                     value = _invoke()
-            nested_graph = as_graph_result(
-                value,
-                parent_step_id=step.id,
-                default_label=label_path[-1],
-            )
+            nested_graph = as_graph_result(value)
             if nested_graph is not None:
                 nested_component_log_path = (
                     self.state.get_component_log_path(step.id)
                     or run_ctx.component_log_path
                 )
-                self._execute_graph(
-                    run.nest(
+                self._execute_compilation(
+                    compile_graph(
                         nested_graph,
-                        component_log_path=nested_component_log_path,
-                    ),
-                    graph_label_path=label_path,
-                    workers=workers,
-                    ancestor_graph_scopes=(
-                        run.child_graph_scope(
-                            step,
-                            graph_step_ids=graph_step_ids,
+                        root_label=label_path[-1],
+                        parent_step_id=step.id,
+                        root_label_path=label_path,
+                        ancestor_graph_scopes=(
+                            run.child_graph_scope(
+                                step,
+                                graph_step_ids=graph_step_ids,
+                            ),
+                            *ancestor_graph_scopes,
                         ),
-                        *ancestor_graph_scopes,
                     ),
+                    workers=workers,
+                    component_log_path=nested_component_log_path,
                 )
                 self.state.record_result(step.id, None)
                 self.state.complete_step(step.id)

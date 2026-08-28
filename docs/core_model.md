@@ -369,7 +369,8 @@ plan = GraphPlan(
 - `LeafAction | FrozenGraph`
 - 冻结后的 prerequisite 和 runtime `when`
 
-dynamic runtime 只执行 FrozenGraph，不直接执行声明态 Graph。
+`FrozenGraph` 是可独立检查和展示的实例化结构。正式 runtime 不再执行它；执行入口
+直接把声明态 `Graph` 交给 Rust 编译器生成 `GraphCompilation`。
 
 ## `GraphCompilation`
 
@@ -377,7 +378,7 @@ dynamic runtime 只执行 FrozenGraph，不直接执行声明态 Graph。
 
 - `rivetoo-graph/src/rivetoo_graph/compile.py`
 
-compiled 路径会把声明期已知子图的叶子展开：
+Rust 编译路径会把声明期已知子图转换为统一执行结构：
 
 - `CompiledStep`
   - 会提交给 worker 的叶子

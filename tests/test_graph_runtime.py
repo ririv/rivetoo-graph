@@ -1534,7 +1534,7 @@ def test_compiled_runtime_when_true_activates_composite() -> None:
 def test_graph_plan_run_logs_step_skip_by_condition(
     caplog: LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger="rivetoo_graph.runtime.dynamic")
+    caplog.set_level(logging.DEBUG, logger="rivetoo_graph.runtime.compiled")
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: True))
     build = Step(
         label="build",
