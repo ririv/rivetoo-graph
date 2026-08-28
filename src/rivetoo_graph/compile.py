@@ -148,6 +148,25 @@ type CompiledNode = CompiledStep | CompiledComposite
 
 
 @dataclass(frozen=True, slots=True)
+class _MaterializeExecutionGraph:
+    """Request native execution indexes from the Python compilation model."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PrecompiledExecutionGraph:
+    """Carry one complete execution graph compiled by the Rust declaration compiler."""
+
+    graph: NativeCompiledExecutionGraph
+    conditions: tuple[CompiledRuntimeCondition, ...]
+    nodes: tuple[CompiledNode, ...]
+
+
+type _ExecutionGraphInput = _MaterializeExecutionGraph | _PrecompiledExecutionGraph
+
+_MATERIALIZE_EXECUTION_GRAPH = _MaterializeExecutionGraph()
+
+
+@dataclass(frozen=True, slots=True)
 class GraphCompilation:
     """声明图的扁平执行计划和组合生命周期记录。
 
@@ -166,18 +185,8 @@ class GraphCompilation:
     )
     source_frozen_graph: FrozenGraph | None = None
     capability_bindings: tuple[FrozenCapabilityBinding, ...] = ()
-    _native_graph_input: NativeCompiledExecutionGraph | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    _native_conditions_input: tuple[CompiledRuntimeCondition, ...] | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
-    _native_nodes_input: tuple[CompiledNode, ...] | None = field(
-        default=None,
+    _execution_graph_input: _ExecutionGraphInput = field(
+        default=_MATERIALIZE_EXECUTION_GRAPH,
         repr=False,
         compare=False,
     )
@@ -207,11 +216,20 @@ class GraphCompilation:
         return self.source_graph.observe
 
     def __post_init__(self) -> None:
-        # 编译产物会被 runtime 直接消费，构造时必须一次性验证引用图，
-        # 避免把结构错误延迟到部分 step 已经执行之后。
         if not self.label:
             raise GraphError("compiled graph label must not be empty")
 
+        match self._execution_graph_input:
+            case _MaterializeExecutionGraph():
+                self._initialize_materialized_execution_graph()
+            case _PrecompiledExecutionGraph() as precompiled:
+                self._initialize_precompiled_execution_graph(precompiled)
+
+    def _initialize_materialized_execution_graph(self) -> None:
+        """Validate public Python inputs and materialize their native execution graph."""
+
+        # 编译产物会被 runtime 直接消费，构造时必须一次性验证引用图，
+        # 避免把结构错误延迟到部分 step 已经执行之后。
         # 单次建立节点、owner 和声明作用域索引。设 V 为节点数、S 为所有不同
         # 声明作用域中的 step 总数：时间 O(V + S)，额外空间 O(V + S)。后续
         # composite 校验必须查询这些索引，不能为每个 composite 重扫全部节点。
@@ -275,35 +293,20 @@ class GraphCompilation:
                     f"{composite.id}"
                 )
 
-        native_nodes = (
-            tuple(nodes.values())
-            if self._native_nodes_input is None
-            else self._native_nodes_input
-        )
-        if {node.id for node in native_nodes} != set(nodes):
-            raise GraphError("native graph nodes do not match compiled nodes")
+        native_nodes = tuple(nodes.values())
         native_node_indexes = {
             node.id: index for index, node in enumerate(native_nodes)
         }
-        if self._native_graph_input is None:
-            try:
-                native_graph, native_conditions, effective_after = (
-                    _materialize_native_execution_graph(
-                        native_nodes,
-                        native_node_indexes,
-                        self.capability_bindings,
-                    )
+        try:
+            native_graph, native_conditions, effective_after = (
+                _materialize_native_execution_graph(
+                    native_nodes,
+                    native_node_indexes,
+                    self.capability_bindings,
                 )
-            except ValueError as exc:
-                raise GraphError(str(exc)) from exc
-        else:
-            native_graph = self._native_graph_input
-            native_conditions = self._native_conditions_input
-            if native_conditions is None:
-                raise GraphError(
-                    "native graph compilation is missing runtime conditions"
-                )
-            effective_after = tuple(node.after for node in native_nodes)
+            )
+        except ValueError as exc:
+            raise GraphError(str(exc)) from exc
 
         if any(
             node.after != lowered_after
@@ -345,13 +348,58 @@ class GraphCompilation:
                     f"{composite.id}"
                 )
 
-        object.__setattr__(self, "_native_graph", native_graph)
-        object.__setattr__(self, "_native_nodes", native_nodes)
-        object.__setattr__(self, "_native_conditions", native_conditions)
+        self._set_native_execution_graph(
+            graph=native_graph,
+            nodes=native_nodes,
+            node_indexes=native_node_indexes,
+            conditions=native_conditions,
+        )
+
+    def _initialize_precompiled_execution_graph(
+        self,
+        precompiled: _PrecompiledExecutionGraph,
+    ) -> None:
+        """Bind opaque Python side tables to a Rust-validated execution graph."""
+
+        # Rust 已经完成声明结构、拓扑、owner、children 与 capability 校验。
+        # Python 这里只验证跨语言侧表仍引用同一批对象，时间与空间均为 O(V)；
+        # 不能再把整个编译图重复验证一遍。
+        declared_nodes = (*self.steps, *self.composites)
+        if len(precompiled.nodes) != len(declared_nodes) or {
+            id(node) for node in precompiled.nodes
+        } != {id(node) for node in declared_nodes}:
+            raise GraphError("precompiled execution nodes do not match compiled nodes")
+
+        native_node_indexes = {
+            node.id: index for index, node in enumerate(precompiled.nodes)
+        }
+        if len(native_node_indexes) != len(precompiled.nodes):
+            raise GraphError("precompiled execution graph has duplicate node ids")
+
+        self._set_native_execution_graph(
+            graph=precompiled.graph,
+            nodes=precompiled.nodes,
+            node_indexes=native_node_indexes,
+            conditions=precompiled.conditions,
+        )
+
+    def _set_native_execution_graph(
+        self,
+        *,
+        graph: NativeCompiledExecutionGraph,
+        nodes: tuple[CompiledNode, ...],
+        node_indexes: dict[StepId, int],
+        conditions: tuple[CompiledRuntimeCondition, ...],
+    ) -> None:
+        """Commit the complete native execution view as one internal state transition."""
+
+        object.__setattr__(self, "_native_graph", graph)
+        object.__setattr__(self, "_native_nodes", nodes)
+        object.__setattr__(self, "_native_conditions", conditions)
         object.__setattr__(
             self,
             "_native_node_indexes",
-            MappingProxyType(native_node_indexes),
+            MappingProxyType(node_indexes),
         )
 
     def _dependent_refs(self, node_id: StepId) -> tuple[CompiledNodeRef, ...]:
@@ -690,9 +738,11 @@ def _materialize_native_compilation(
         roots=roots,
         root_label_path=graph_label_paths[0],
         root_graph_step_ids=graph_step_ids[0],
-        _native_graph_input=native.graph,
-        _native_conditions_input=compiled_conditions,
-        _native_nodes_input=tuple(ordered_nodes),
+        _execution_graph_input=_PrecompiledExecutionGraph(
+            graph=native.graph,
+            conditions=compiled_conditions,
+            nodes=tuple(ordered_nodes),
+        ),
     )
 
 

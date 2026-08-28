@@ -19,7 +19,7 @@ step 时，把执行图编译与调度状态机迁移到 Rust 是否仍有收益
 - 每个 recipe 由一个 composite 保留子图边界，共 2,000 个 composite
 - recipe 之间组成 20 条依赖链，允许最多 20 个 recipe 层级并行推进
 - runtime 使用 8 个线程 worker
-- 编译与 runtime 分别执行 3 次并取中位数
+- 编译与 runtime 分别执行 5 次并取中位数
 
 该结构不是某个真实 package repository 的依赖图快照，而是一个可重复的分层 DAG。
 它同时保留 recipe 边界、recipe 内阶段顺序和跨 recipe 依赖，比“总共 2,000 个独立
@@ -37,24 +37,32 @@ step”的微基准更接近大规模构建编排。
 
 | 实现 | 编译中位数 | Runtime 中位数 | 两项中位数之和 |
 |---|---:|---:|---:|
-| 纯 Python | 1.000669s | 13.787106s | 14.787775s |
-| Rust 状态机 + Python action | 0.487382s | 9.995732s | 10.483114s |
+| 纯 Python | 0.915015s | 13.388637s | 14.303652s |
+| Rust 状态机 + Python action | 0.333768s | 9.413393s | 9.747161s |
 
 原始样本：
 
 ```text
-pure-python compile = [0.8881366660352796, 1.0006690410664305, 1.0822665840387344]
-pure-python runtime = [13.787106417003088, 13.342708665993996, 13.979397624963894]
+pure-python compile = [0.9050715418998152, 0.9029900829773396,
+                       0.915015000035055, 0.9332317499211058,
+                       0.9470305419526994]
+pure-python runtime = [13.388636792078614, 13.366689124959521,
+                       13.345061874948442, 14.904916667030193,
+                       14.302743416046724]
 
-rust-python compile = [0.48738204198889434, 0.42751637496985495, 0.49038170801941305]
-rust-python runtime = [11.291682832990773, 9.995732290903106, 9.904609041986987]
+rust-python compile = [0.2818566670175642, 0.3337678749812767,
+                       0.34090887499041855, 0.2765289170201868,
+                       0.3360874579520896]
+rust-python runtime = [9.41339295799844, 9.493625707924366,
+                       9.459358749911189, 9.329700125032105,
+                       9.271784832933918]
 ```
 
 在该输入下：
 
-- Rust runtime 约为纯 Python 的 `1.38x`，中位耗时降低约 28%
-- Rust 编译路径约为纯 Python 的 `2.05x`，中位耗时降低约 51%
-- 编译与 runtime 的中位数相加后，Rust 路径约为纯 Python 的 `1.41x`，耗时降低约 29%
+- Rust runtime 约为纯 Python 的 `1.42x`，中位耗时降低约 30%
+- Rust 编译路径约为纯 Python 的 `2.74x`，中位耗时降低约 64%
+- 编译与 runtime 的中位数相加后，Rust 路径约为纯 Python 的 `1.47x`，耗时降低约 32%
 
 “两项中位数之和”仅用于展示一次编译加一次执行的大致固定成本，不是对逐次总耗时
 样本取中位数。
@@ -99,6 +107,27 @@ index.setdefault(key, frozenset(scope.values()))
 修复后，Rust 编译中位数从约 11.61 秒降至 0.49 秒，纯 Python 从约 11.31 秒降至
 1.00 秒。profile 中函数调用量也从约 5,504 万次降至约 118 万次。
 
+### 重复的跨语言编译校验
+
+上述复杂度修复后，Rust 声明编译器已经验证过的图仍会在构造 Python
+`GraphCompilation` 时再次执行完整结构校验。原实现用三个彼此关联的可选字段表示
+native graph、运行期条件和节点侧表，既允许表达只传一部分输入的非法状态，也无法明确
+区分“验证 Python 手工构造的编译模型”和“绑定 Rust 已验证结果”两条路径。
+
+当前输入改为显式和类型：
+
+- Python 手工构造的 `GraphCompilation` 继续执行完整验证，再生成 native execution graph
+- Rust 编译结果必须一次提供完整 graph、condition 和 node 侧表，Python 只做 `O(V)` 的
+  对象身份与唯一 ID 校验
+
+同一提交前后的 5 次完整 A/B 基准中，Rust 编译中位数从约 0.41 秒降至约 0.33 秒；
+runtime 中位数分别为 9.38 秒和 9.41 秒，约 0.4% 的差异属于线程调度波动。另一次只测
+编译的 15 次 A/B 采样中，中位数从 0.3894 秒降至 0.3149 秒，均值从 0.3885 秒降至
+0.3033 秒。最新 profile 中
+`compile_declaration` 约为 0.08 秒，Python 侧表恢复约为 0.39 秒（含 profiler 开销）；
+剩余 Python 时间用于恢复 action、predicate、label path、observe 和结果作用域等不透明
+宿主对象，不是第二套拓扑或调度算法。
+
 ## 如何复现
 
 在 Rust 主线中：
@@ -110,7 +139,7 @@ PYTHONPATH=src ../.venv/bin/python benchmarks/recipe_scale.py \
   --steps 6 \
   --lanes 20 \
   --workers 8 \
-  --repeats 3
+  --repeats 5
 ```
 
 同一个脚本只依赖公开 Python API。要测试保留在 `python` 分支的纯 Python 实现，可以让
@@ -124,7 +153,7 @@ PYTHONPATH=/Volumes/ssd/Proj/infinity/rivetoo/work/rivetoo-graph-python/src \
   --steps 6 \
   --lanes 20 \
   --workers 8 \
-  --repeats 3
+  --repeats 5
 ```
 
 ## 解释边界
