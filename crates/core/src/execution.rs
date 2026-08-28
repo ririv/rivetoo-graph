@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-use crate::topology::{Arc, DagTopology, DirectedTopology, NodeId, TopologyError};
+use topology::{Arc, DagTopology, DirectedTopology, NodeId, TopologyError};
 
 /// Stable identity of one opaque runtime predicate inside a compiled graph.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -505,7 +505,7 @@ mod tests {
         CapabilityBinding, CompiledExecutionGraph, ConditionId, ExecutionGraphError, ExecutionNode,
         ExecutionNodeKind, Prerequisite, RuntimeCondition,
     };
-    use crate::topology::NodeId;
+    use topology::NodeId;
 
     fn node(index: usize) -> NodeId {
         NodeId::new(index)

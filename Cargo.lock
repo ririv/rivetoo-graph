@@ -119,6 +119,9 @@ dependencies = [
 [[package]]
 name = "rivetoo-graph"
 version = "0.1.0"
+dependencies = [
+ "topology",
+]
 
 [[package]]
 name = "syn"
@@ -153,6 +156,10 @@ dependencies = [
  "rivetoo-graph",
  "tokio",
 ]
+
+[[package]]
+name = "topology"
+version = "0.1.0"
 
 [[package]]
 name = "unicode-ident"

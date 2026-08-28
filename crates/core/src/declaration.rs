@@ -9,7 +9,7 @@ use crate::lowering::{
     DeclaredGraph, DeclaredNode, DeclaredNodeKind, ExecutionGraphDeclaration, GraphId,
     LoweringError,
 };
-use crate::topology::NodeId;
+use topology::NodeId;
 
 /// A declaration node that either participates in this projection or is absent.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -641,7 +641,7 @@ mod tests {
     use super::{DeclarationNode, DeclarationPrerequisite, GraphDeclaration, NodeActivation};
     use crate::execution::{CapabilityBinding, ConditionId, RuntimeCondition};
     use crate::lowering::{DeclaredGraph, DeclaredNodeKind, GraphId};
-    use crate::topology::NodeId;
+    use topology::NodeId;
 
     #[test]
     fn compilation_removes_inactive_nodes_and_their_edges() {

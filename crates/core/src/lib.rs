@@ -5,7 +5,6 @@ pub mod declaration;
 pub mod execution;
 pub mod lowering;
 pub mod session;
-pub mod topology;
 
 pub use capability::{
     CapabilityId, CapabilityRequirement, CapabilityResolutionError, ComponentId, ProviderSelection,

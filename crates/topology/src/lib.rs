@@ -1,3 +1,5 @@
+//! Domain-independent directed topology and DAG validation.
+
 use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

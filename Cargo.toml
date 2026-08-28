@@ -2,6 +2,7 @@
 members = [
     "crates/core",
     "crates/python",
+    "crates/topology",
     "crates/tokio-runtime",
 ]
 resolver = "3"

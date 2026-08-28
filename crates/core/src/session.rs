@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
 use crate::execution::{CompiledExecutionGraph, ConditionId, ExecutionNodeKind, Prerequisite};
-use crate::topology::NodeId;
+use topology::NodeId;
 
 /// Runtime state of one compiled execution node.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -558,7 +558,7 @@ mod tests {
     use crate::execution::{
         CompiledExecutionGraph, ConditionId, ExecutionNode, Prerequisite, RuntimeCondition,
     };
-    use crate::topology::NodeId;
+    use topology::NodeId;
 
     fn node(index: usize) -> NodeId {
         NodeId::new(index)
