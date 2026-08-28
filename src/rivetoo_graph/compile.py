@@ -16,7 +16,6 @@ from .results import GraphScope
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from .frozen import FrozenCapabilityBinding, FrozenGraph
     from .model import (
         ConditionalEdgePredicate,
         Graph,
@@ -183,8 +182,6 @@ class GraphCompilation:
     root_graph_step_ids: Mapping[Step, StepId] = field(
         default_factory=lambda: MappingProxyType({})
     )
-    source_frozen_graph: FrozenGraph | None = None
-    capability_bindings: tuple[FrozenCapabilityBinding, ...] = ()
     _execution_graph_input: _ExecutionGraphInput = field(
         default=_MATERIALIZE_EXECUTION_GRAPH,
         repr=False,
@@ -302,7 +299,6 @@ class GraphCompilation:
                 _materialize_native_execution_graph(
                     native_nodes,
                     native_node_indexes,
-                    self.capability_bindings,
                 )
             )
         except ValueError as exc:
@@ -477,7 +473,6 @@ def _validate_compiled_condition(
 def _materialize_native_execution_graph(
     nodes: tuple[CompiledNode, ...],
     node_indexes: Mapping[StepId, int],
-    capability_bindings: tuple[FrozenCapabilityBinding, ...],
 ) -> tuple[
     NativeCompiledExecutionGraph,
     tuple[CompiledRuntimeCondition, ...],
@@ -533,13 +528,7 @@ def _materialize_native_execution_graph(
         prerequisites,
         when_conditions,
         condition_reads,
-        [
-            (
-                node_indexes.get(binding.source, len(nodes)),
-                node_indexes.get(binding.target, len(nodes)),
-            )
-            for binding in capability_bindings
-        ],
+        [],
     )
     effective_after = tuple(
         tuple(

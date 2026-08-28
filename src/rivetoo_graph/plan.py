@@ -12,7 +12,6 @@ from .execution_output import (
     NO_GRAPH_EXECUTION_OUTPUT,
     GraphExecutionOutput,
 )
-from .frozen import FrozenGraph, freeze_graph
 from .runtime import (
     NO_GRAPH_ACTION_LOG,
     AsyncGraphRunOptions,
@@ -43,7 +42,6 @@ class GraphPlan:
     - 这次执行使用的 `GraphExecutionControl`
 
     它负责的入口包括：
-    - `freeze()`：求值 `StaticCondition`，得到 `FrozenGraph`
     - `compile()`：在内部 lower 条件边并生成 `GraphCompilation`
     - `run()`：按 dynamic / compiled 两种模式执行这次图实例
     """
@@ -60,9 +58,6 @@ class GraphPlan:
     def __post_init__(self) -> None:
         if not self.label:
             raise GraphError("graph plan label must not be empty")
-
-    def freeze(self) -> FrozenGraph:
-        return freeze_graph(self.graph, root_label=self.label)
 
     def compile(self) -> GraphCompilation:
         return compile_graph(self.graph, root_label=self.label)

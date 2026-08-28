@@ -15,12 +15,6 @@ from ..compile import (
     GraphCompilation,
     compile_graph,
 )
-from ..frozen import (
-    FrozenRuntimeCondition,
-    FrozenStep,
-    FrozenStepPrerequisite,
-    RuntimeConditionalEdge,
-)
 from ..model import (
     Condition,
     ConditionalEdge,
@@ -52,7 +46,7 @@ def ensure_compilation(
 
 
 def render_step_label(
-    step: Step | FrozenStep | CompiledStep,
+    step: Step | CompiledStep,
     *,
     step_id: StepId | None = None,
 ) -> str:
@@ -60,8 +54,6 @@ def render_step_label(
         if step_id is None:
             raise ValueError("declaration step label requires its mounted step id")
         return resolve_step_label(step, step_id)
-    if isinstance(step, FrozenStep):
-        return step.label
     return step.context.label_path[-1]
 
 
@@ -71,7 +63,7 @@ def render_compiled_step_label(step: CompiledStep, path: tuple[str, ...]) -> str
 
 
 def render_when_suffix(
-    step: Step | FrozenStep | CompiledStep | CompiledComposite,
+    step: Step | CompiledStep | CompiledComposite,
 ) -> str:
     when = step.when
     if when is None:
@@ -80,7 +72,7 @@ def render_when_suffix(
 
 
 def render_after_suffix(
-    step: FrozenStep | CompiledStep | CompiledComposite,
+    step: CompiledStep | CompiledComposite,
     *,
     step_labels: Mapping[StepId, str] | None = None,
 ) -> str:
@@ -137,7 +129,7 @@ def render_step_path(path: tuple[str, ...]) -> str:
 
 
 def format_prerequisite(
-    dep: StepPrerequisite | FrozenStepPrerequisite | CompiledPrerequisite,
+    dep: StepPrerequisite | CompiledPrerequisite,
     *,
     step_labels: Mapping[StepId, str] | None = None,
 ) -> str:
@@ -153,9 +145,6 @@ def format_prerequisite(
                     "declaration prerequisite label requires its mounted step id"
                 )
             return f"{source.label} (条件边: {condition_name(condition)})"
-        case RuntimeConditionalEdge(step_id=step_id, condition=condition):
-            dep_id = _label(step_id)
-            return f"{dep_id} (条件边: {condition_name(condition)})"
         case CompiledConditionalDependency(node=node, condition=condition):
             dep_id = _label(node.id)
             return f"{dep_id} (条件边: {condition_name(condition)})"
@@ -176,11 +165,11 @@ def prerequisite_step_label(dep: StepPrerequisite) -> str | None:
 
 
 def condition_name(
-    condition: Condition | FrozenRuntimeCondition | CompiledRuntimeCondition,
+    condition: Condition | CompiledRuntimeCondition,
 ) -> str:
     if isinstance(
         condition,
-        (RuntimeCondition, FrozenRuntimeCondition, CompiledRuntimeCondition),
+        (RuntimeCondition, CompiledRuntimeCondition),
     ):
         qualname = getattr(condition.when, "__qualname__", None)
         if isinstance(qualname, str) and qualname:

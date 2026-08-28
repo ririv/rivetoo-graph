@@ -51,8 +51,6 @@ from rivetoo_graph import Graph, GraphPlan, Step
   - 条件求值前必须完成的结果依赖
 - `StepWiring` / `GraphWiring`
   - 声明期组合结构
-- `FrozenGraph`
-  - 静态条件实例化后的可检查结构
 - `GraphCompilation`
   - 正式 runtime 使用的执行结构与 composite 边界
 

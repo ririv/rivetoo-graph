@@ -74,14 +74,14 @@ Step(
 
 表示：
 
-- 这条条件在 freeze 阶段就能判定
+- 这条条件在编译阶段就能判定
 
 处理规则：
 
 - 条件为真
   - step 保留
 - 条件为假
-  - step 在 `freeze_graph(...)` 阶段直接裁掉
+  - step 在 `compile_graph(...)` 阶段直接裁掉
 
 这时它的语义就是：
 
@@ -182,8 +182,7 @@ Rust `ExecutionSession` 维护 pending、ready、running、skipped 与条件缓�
 
 - `rivetoo-graph/src/rivetoo_graph/compile.py`
 
-`freeze_graph(...)` 仍可独立用于结构实例化；正式执行则直接调用 `compile_graph(...)`。
-条件 step 在编译中的处理是：
+正式执行直接调用 `compile_graph(...)`。条件 step 在编译中的处理是：
 
 ### 静态裁剪
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from rivetoo_graph import (
-    FrozenGraph,
     Graph,
     GraphError,
     GraphWiring,
@@ -13,7 +12,7 @@ from rivetoo_graph import (
     StepRunContext,
     StepWiring,
     UnconditionalEdge,
-    freeze_graph,
+    compile_graph,
     render_graph,
     render_graph_mermaid,
     runtime_condition,
@@ -219,15 +218,13 @@ def test_graph_wiring_wraps_unlabeled_graph_operand() -> None:
     after = Step(label="after", action=LeafAction(fn=_noop))
 
     graph = (before >> child >> after).graph()
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
 
     mounted_child = graph.steps[1]
     assert mounted_child.label is None
     assert mounted_child.action is child
-    assert frozen.steps[1].label == "1"
-    assert isinstance(frozen.steps[1].action, FrozenGraph)
-    assert frozen.steps[1].action.label == "1"
-    assert frozen.steps[1].action.steps[0].label == "1.0"
+    assert compilation.composites[0].graph_label == "1"
+    assert compilation.steps[1].context.label_path == ("1", "1.0")
 
 
 def test_graph_from_wiring_accepts_composed_wiring() -> None:
@@ -313,16 +310,19 @@ def test_step_function_leaves_lambda_unlabeled() -> None:
     assert declaration.label is None
 
 
-def test_unlabeled_steps_use_mounted_ids_in_frozen_and_rendered_graphs() -> None:
+def test_unlabeled_steps_use_mounted_ids_in_compiled_and_rendered_graphs() -> None:
     first = Step(action=lambda: None)
     second = Step(action=lambda: None)
     graph = (first >> second).graph()
 
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
     tree = render_graph(graph, root_label="root")
     mermaid = render_graph_mermaid(graph, root_label="root")
 
-    assert tuple(item.label for item in frozen.steps) == ("0", "1")
+    assert tuple(item.context.label_path[-1] for item in compilation.steps) == (
+        "0",
+        "1",
+    )
     assert "├─ 0" in tree
     assert "└─ 1 [after: 0]" in tree
     assert '["0"]' in mermaid

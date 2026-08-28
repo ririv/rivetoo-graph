@@ -10,9 +10,6 @@ from rivetoo_graph import (
     CompiledRuntimeCondition,
     CompiledStepRef,
     ConditionalPrerequisite,
-    FrozenGraph,
-    FrozenRuntimeCondition,
-    FrozenStep,
     Graph,
     GraphCompilation,
     GraphError,
@@ -22,7 +19,6 @@ from rivetoo_graph import (
     GraphResultStore,
     LeafAction,
     ParentGraphStepRef,
-    RuntimeConditionalEdge,
     StaticCondition,
     StaticConditionEvaluator,
     Step,
@@ -31,7 +27,6 @@ from rivetoo_graph import (
     all_,
     any_,
     compile_graph,
-    freeze_graph,
     not_,
     render_graph,
     render_graph_compilation_mermaid,
@@ -106,7 +101,6 @@ def test_graph_compilation_rejects_unknown_prerequisite() -> None:
     with pytest.raises(GraphError, match="unknown node"):
         GraphCompilation(
             source_graph=source_graph,
-            source_frozen_graph=compilation.source_frozen_graph,
             label=compilation.label,
             steps=(invalid_step,),
             composites=(),
@@ -122,7 +116,6 @@ def test_graph_compilation_rejects_missing_composite_child() -> None:
     with pytest.raises(GraphError, match="children do not match owned nodes"):
         GraphCompilation(
             source_graph=source_graph,
-            source_frozen_graph=compilation.source_frozen_graph,
             label=compilation.label,
             steps=compilation.steps,
             composites=(invalid_composite,),
@@ -144,7 +137,6 @@ def test_graph_compilation_rejects_dependency_cycle() -> None:
     with pytest.raises(GraphError, match="dependency cycle"):
         GraphCompilation(
             source_graph=source_graph,
-            source_frozen_graph=compilation.source_frozen_graph,
             label=compilation.label,
             steps=(
                 replace(prepare, after=(build.ref,)),
@@ -175,35 +167,6 @@ def test_graph_rejects_runtime_condition_read_cycle() -> None:
         )
 
 
-def test_frozen_graph_rejects_runtime_condition_read_cycle() -> None:
-    prepare_decl = Step(label="prepare", action=lambda: None)
-    build_decl = Step(label="build", action=lambda: None)
-    with pytest.raises(GraphError, match="dependency cycle"):
-        FrozenGraph(
-            source_graph=Graph(steps=(prepare_decl, build_decl)),
-            label="root",
-            steps=(
-                FrozenStep(
-                    id=StepId((0,)),
-                    source_step=prepare_decl,
-                    label="prepare",
-                    when=FrozenRuntimeCondition(
-                        reads=(StepId((1,)),),
-                        when=lambda _ctx: True,
-                    ),
-                    action=LeafAction(fn=lambda: None),
-                ),
-                FrozenStep(
-                    id=StepId((1,)),
-                    source_step=build_decl,
-                    label="build",
-                    after=(StepId((0,)),),
-                    action=LeafAction(fn=lambda: None),
-                ),
-            ),
-        )
-
-
 def test_graph_compilation_rejects_runtime_condition_read_cycle() -> None:
     source_graph = Graph.from_wiring(
         label="root",
@@ -218,7 +181,6 @@ def test_graph_compilation_rejects_runtime_condition_read_cycle() -> None:
     with pytest.raises(GraphError, match="dependency cycle"):
         GraphCompilation(
             source_graph=source_graph,
-            source_frozen_graph=compilation.source_frozen_graph,
             label=compilation.label,
             steps=(
                 replace(
@@ -504,7 +466,7 @@ def test_render_live_graph_execution_hides_not_reached_steps() -> None:
     assert rendered == "graph=root mode=dynamic running=idle last=- remaining=3"
 
 
-def test_freeze_graph_resolves_static_conditions() -> None:
+def test_compile_graph_resolves_static_conditions() -> None:
     prepare = Step(label="prepare", action=LeafAction(fn=lambda: None))
     android_shim = Step(label="android_shim", action=LeafAction(fn=lambda: None))
     archive = Step(label="archive", action=LeafAction(fn=lambda: None))
@@ -526,12 +488,15 @@ def test_freeze_graph_resolves_static_conditions() -> None:
         static_condition_eval=_ConditionEvaluator(active=frozenset({"android"})),
     )
 
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
 
-    assert frozen.steps[2].after == (StepId((0,)), StepId((1,)))
+    assert compilation.steps[2].after == (
+        CompiledStepRef(StepId((0,))),
+        CompiledStepRef(StepId((1,))),
+    )
 
 
-def test_freeze_graph_removes_static_condition_edge_when_false() -> None:
+def test_compile_graph_removes_static_condition_edge_when_false() -> None:
     prepare = Step(label="prepare", action=lambda: None)
     android_shim = Step(label="android_shim", action=lambda: None)
     archive = Step(label="archive", action=lambda: None)
@@ -553,12 +518,12 @@ def test_freeze_graph_removes_static_condition_edge_when_false() -> None:
         static_condition_eval=_ConditionEvaluator(active=frozenset({"ios"})),
     )
 
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
 
-    assert frozen.steps[2].after == (StepId((0,)),)
+    assert compilation.steps[2].after == (CompiledStepRef(StepId((0,))),)
 
 
-def test_freeze_graph_preserves_runtime_condition_edge() -> None:
+def test_compile_graph_preserves_runtime_condition_edge() -> None:
     probe = Step(label="probe", action=lambda: "miss")
     configure = Step(label="configure", action=lambda: None)
     condition = runtime_condition(
@@ -583,21 +548,21 @@ def test_freeze_graph_preserves_runtime_condition_edge() -> None:
         label="root",
     )
 
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
 
-    assert frozen.steps[2].after == (
-        StepId((0,)),
-        RuntimeConditionalEdge(
-            step_id=StepId((1,)),
-            condition=FrozenRuntimeCondition(
-                reads=(StepId((0,)),),
+    assert compilation.steps[2].after == (
+        CompiledStepRef(StepId((0,))),
+        CompiledConditionalDependency(
+            node=CompiledStepRef(StepId((1,))),
+            condition=CompiledRuntimeCondition(
+                reads=(CompiledStepRef(StepId((0,))),),
                 when=condition.when,
             ),
         ),
     )
 
 
-def test_freeze_graph_rejects_static_condition_edge_without_evaluator() -> None:
+def test_compile_graph_rejects_static_condition_edge_without_evaluator() -> None:
     android_shim = Step(label="android_shim", action=lambda: None)
     archive = Step(label="archive", action=lambda: None)
     graph = Graph.from_wiring(
@@ -615,11 +580,11 @@ def test_freeze_graph_rejects_static_condition_edge_without_evaluator() -> None:
         label="root",
     )
 
-    with pytest.raises(GraphError, match="Graph.static_condition_eval is None"):
-        freeze_graph(graph, root_label="root")
+    with pytest.raises(GraphError, match="static_condition_eval is None"):
+        compile_graph(graph, root_label="root")
 
 
-def test_freeze_graph_accepts_static_condition_eval_function() -> None:
+def test_compile_graph_accepts_static_condition_eval_function() -> None:
     def _eval(condition: StaticCondition) -> bool:
         return condition.payload == _condition("android").payload
 
@@ -644,12 +609,15 @@ def test_freeze_graph_accepts_static_condition_eval_function() -> None:
         static_condition_eval=_eval,
     )
 
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
 
-    assert frozen.steps[2].after == (StepId((0,)), StepId((1,)))
+    assert compilation.steps[2].after == (
+        CompiledStepRef(StepId((0,))),
+        CompiledStepRef(StepId((1,))),
+    )
 
 
-def test_freeze_graph_handles_builtin_static_condition_combinators() -> None:
+def test_compile_graph_handles_builtin_static_condition_combinators() -> None:
     prepare = Step(label="prepare", action=LeafAction(fn=lambda: None))
     android_shim = Step(label="android_shim", action=LeafAction(fn=lambda: None))
     shared_only = Step(label="shared_only", action=LeafAction(fn=lambda: None))
@@ -683,12 +651,12 @@ def test_freeze_graph_handles_builtin_static_condition_combinators() -> None:
         static_condition_eval=_ConditionEvaluator(active=frozenset({"android"})),
     )
 
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
 
-    assert frozen.steps[3].after == (
-        StepId((0,)),
-        StepId((1,)),
-        StepId((2,)),
+    assert compilation.steps[3].after == (
+        CompiledStepRef(StepId((0,))),
+        CompiledStepRef(StepId((1,))),
+        CompiledStepRef(StepId((2,))),
     )
 
 
@@ -805,7 +773,7 @@ def test_render_graph_compiled_shows_conditional_dependency() -> None:
     assert "- build [after: probe, configure (条件边: runtime:" in rendered
 
 
-def test_freeze_graph_removes_static_disabled_step_and_dependency() -> None:
+def test_compile_graph_removes_static_disabled_step_and_dependency() -> None:
     prepare = Step(label="prepare", action=LeafAction(fn=lambda: None))
     android_only = Step(
         label="android_only",
@@ -823,10 +791,10 @@ def test_freeze_graph_removes_static_disabled_step_and_dependency() -> None:
         static_condition_eval=_ConditionEvaluator(active=frozenset({"ios"})),
     )
 
-    frozen = freeze_graph(graph, root_label="root")
+    compilation = compile_graph(graph, root_label="root")
 
-    assert [step.id for step in frozen.steps] == [StepId((0,)), StepId((2,))]
-    assert frozen.steps[1].after == (StepId((0,)),)
+    assert [step.id for step in compilation.steps] == [StepId((0,)), StepId((2,))]
+    assert compilation.steps[1].after == (CompiledStepRef(StepId((0,))),)
 
 
 def test_compile_graph_preserves_runtime_when_on_leaf_step() -> None:

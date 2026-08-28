@@ -1,11 +1,9 @@
 # 核心模型
 
-Graph 模块把声明、实例化、编译和执行分成独立阶段：
+Graph 模块把声明、编译和执行分成独立阶段：
 
 ```text
 Graph / Step
-    ↓ freeze_graph(...)
-FrozenGraph / FrozenStep
     ↓ compile_graph(...)
 GraphCompilation
     ↓ Graph runtime
@@ -31,8 +29,8 @@ GraphExecutionState
 
 这层不认识 `Step`、action、条件、capability 或运行状态。执行 `Graph` 会把所有
 真实阻塞关系投影为 `DirectedTopology[Step]`，再通过 `DAGTopology` 验证；
-`FrozenGraph` 与 `GraphCompilation` 使用同一套校验。其它领域图也可以复用纯拓扑层，
-但保留自己的节点、边和方向语义。
+`GraphCompilation` 同样在执行前验证最终 DAG。其它领域图也可以复用纯拓扑层，但保留
+自己的节点、边和方向语义。
 
 ## `Graph`
 
@@ -329,7 +327,6 @@ plan = GraphPlan(
 
 并提供：
 
-- `freeze()`
 - `compile()`
 - `run(...)`
 - `require_result(step)`
@@ -345,33 +342,6 @@ plan = GraphPlan(
 `action_log` 不接入宿主日志设施，`execution_output` 也不写外部文件；需要文件输出时，
 宿主显式传入 Graph 提供的 `TreeFileExecutionOutput(output_dir)`。
 
-## `FrozenGraph`
-
-位置：
-
-- `rivetoo-graph/src/rivetoo_graph/frozen.py`
-
-`freeze_graph(...)` 针对一次挂载实例化声明图：
-
-- 为每个 Step 分配 `StepId`
-- 解析可选 label
-- 求值并裁剪静态 Step 条件
-- 求值静态条件边
-- 把 Step 对象引用转换为 `StepId`
-- 把运行时条件转换为 `FrozenRuntimeCondition`
-- 递归冻结声明期已知子图
-
-`FrozenStep` 保存：
-
-- `id: StepId`
-- `source_step: Step`
-- 已解析的 `label`
-- `LeafAction | FrozenGraph`
-- 冻结后的 prerequisite 和 runtime `when`
-
-`FrozenGraph` 是可独立检查和展示的实例化结构。正式 runtime 不再执行它；执行入口
-直接把声明态 `Graph` 交给 Rust 编译器生成 `GraphCompilation`。
-
 ## `GraphCompilation`
 
 位置：
@@ -379,6 +349,10 @@ plan = GraphPlan(
 - `rivetoo-graph/src/rivetoo_graph/compile.py`
 
 Rust 编译路径会把声明期已知子图转换为统一执行结构：
+
+- 求值静态条件并裁剪未启用节点与边
+- 为挂载节点分配 `StepId` 并解析展示 label
+- 把运行期条件和 capability binding 降级为执行依赖
 
 - `CompiledStep`
   - 会提交给 worker 的叶子

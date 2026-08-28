@@ -26,14 +26,6 @@ from .execution_output import (
     NoGraphExecutionOutput,
     TreeFileExecutionOutput,
 )
-from .frozen import (
-    FrozenCapabilityBinding,
-    FrozenGraph,
-    FrozenRuntimeCondition,
-    FrozenStep,
-    RuntimeConditionalEdge,
-    freeze_graph,
-)
 from .model import (
     ConditionalEdge,
     ConditionalPrerequisite,
@@ -139,11 +131,6 @@ __all__ = [
     "LeafActionCallable",
     "StepId",
     "StepLabelPath",
-    "FrozenGraph",
-    "FrozenCapabilityBinding",
-    "FrozenRuntimeCondition",
-    "FrozenStep",
-    "RuntimeConditionalEdge",
     "CompiledStep",
     "CompiledStepRef",
     "CompiledComposite",
@@ -152,7 +139,6 @@ __all__ = [
     "CompiledConditionalDependency",
     "GraphCompilation",
     "compile_graph",
-    "freeze_graph",
     "render_graph",
     "render_graph_execution",
     "render_live_graph_execution",

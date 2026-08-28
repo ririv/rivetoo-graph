@@ -16,9 +16,8 @@
   - composite 只记录专门的进入与完成状态
   - 支持 capability binding lowering
 
-正式 runtime 只接收 `GraphCompilation`。`FrozenGraph` 与 `freeze_graph()` 仍是公开的
-结构实例化 API，但不再承载另一套 Python 调度路径。action 在运行期返回的 `Graph`
-会携带父 step id、label path 与父结果作用域，再进入同一个编译执行流程。
+正式 runtime 只接收 `GraphCompilation`。action 在运行期返回的 `Graph` 会携带父
+step id、label path 与父结果作用域，再进入同一个编译执行流程。
 
 ## 条件执行
 
@@ -168,7 +167,7 @@ action 日志端口。需要日志或执行视图时，宿主必须显式传入�
 14. step 抛错即终止，不做 fallback
 
 `RuntimeCondition.reads` 虽然不是普通 Graph edge，但它会阻塞条件求值，因此参与
-`Graph`、`FrozenGraph` 和 `GraphCompilation` 的 DAG 环检测。读取依赖和边共同成环时，
+`Graph` 和 `GraphCompilation` 的 DAG 环检测。读取依赖和边共同成环时，
 会在构造或编译阶段直接失败，不会留到 runtime 报 unresolved dependencies。
 
 ## 为什么当前不提供 runtime hooks
