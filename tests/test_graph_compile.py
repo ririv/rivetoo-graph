@@ -114,6 +114,22 @@ def test_graph_compilation_rejects_unknown_prerequisite() -> None:
         )
 
 
+def test_graph_compilation_rejects_missing_composite_child() -> None:
+    source_graph = _make_nested_graph(stage_graph=_make_stage_graph())
+    compilation = GraphPlan(label="root", graph=source_graph).compile()
+    invalid_composite = replace(compilation.composites[0], children=())
+
+    with pytest.raises(GraphError, match="children do not match owned nodes"):
+        GraphCompilation(
+            source_graph=source_graph,
+            source_frozen_graph=compilation.source_frozen_graph,
+            label=compilation.label,
+            steps=compilation.steps,
+            composites=(invalid_composite,),
+            roots=compilation.roots,
+        )
+
+
 def test_graph_compilation_rejects_dependency_cycle() -> None:
     source_graph = Graph.from_wiring(
         label="root",

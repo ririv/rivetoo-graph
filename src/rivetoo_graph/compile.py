@@ -173,11 +173,25 @@ class GraphCompilation:
         if not self.label:
             raise GraphError("compiled graph label must not be empty")
 
+        # 单次建立节点、owner 和声明作用域索引。设 V 为节点数、S 为所有不同
+        # 声明作用域中的 step 总数：时间 O(V + S)，额外空间 O(V + S)。后续
+        # composite 校验必须查询这些索引，不能为每个 composite 重扫全部节点。
         nodes: dict[StepId, CompiledNode] = {}
+        child_ids_by_owner: dict[CompiledCompositeRef, set[StepId]] = {}
+        ownerless_node_ids: set[StepId] = set()
+        scope_step_ids: dict[int, frozenset[StepId]] = {}
         for node in (*self.steps, *self.composites):
             if node.id in nodes:
                 raise GraphError(f"compiled graph has duplicate node id: {node.id}")
             nodes[node.id] = node
+            if node.owner is None:
+                ownerless_node_ids.add(node.id)
+            else:
+                child_ids_by_owner.setdefault(node.owner, set()).add(node.id)
+            scope = node.context.graph_step_ids
+            scope_key = id(scope)
+            if scope_key not in scope_step_ids:
+                scope_step_ids[scope_key] = frozenset(scope.values())
 
         root_ids = tuple(root.id for root in self.roots)
         if len(root_ids) != len(set(root_ids)):
@@ -186,14 +200,23 @@ class GraphCompilation:
             node = _require_compiled_node(nodes, root)
             if node.owner is not None:
                 raise GraphError(f"compiled root has an owner: {node.id}")
-        expected_root_ids = {node.id for node in nodes.values() if node.owner is None}
-        if set(root_ids) != expected_root_ids:
+        if set(root_ids) != ownerless_node_ids:
             raise GraphError("compiled graph roots do not match ownerless nodes")
 
+        # 节点、直接依赖和 children 只遍历一次：时间 O(V + A)，其中 A 为
+        # prerequisite 与 composite-child 引用总数；不再含 O(C * V) 扫描。
         for step in self.steps:
-            _validate_compiled_node(nodes, step)
+            _validate_compiled_node(
+                nodes,
+                step,
+                scope_step_ids=scope_step_ids[id(step.context.graph_step_ids)],
+            )
         for composite in self.composites:
-            _validate_compiled_node(nodes, composite)
+            _validate_compiled_node(
+                nodes,
+                composite,
+                scope_step_ids=scope_step_ids[id(composite.context.graph_step_ids)],
+            )
             child_ids = tuple(child.id for child in composite.children)
             if len(child_ids) != len(set(child_ids)):
                 raise GraphError(
@@ -206,9 +229,7 @@ class GraphCompilation:
                         "compiled composite child has a different owner: "
                         f"{child_node.id}"
                     )
-            expected_child_ids = {
-                node.id for node in nodes.values() if node.owner == composite.ref
-            }
+            expected_child_ids = child_ids_by_owner.get(composite.ref, set())
             if set(child_ids) != expected_child_ids:
                 raise GraphError(
                     "compiled composite children do not match owned nodes: "
@@ -251,13 +272,15 @@ def _require_compiled_node(
 def _validate_compiled_node(
     nodes: dict[StepId, CompiledNode],
     node: CompiledNode,
+    *,
+    scope_step_ids: frozenset[StepId],
 ) -> None:
     """验证单个节点的声明作用域、所有权和直接依赖引用。"""
 
     context = node.context
     if not context.label_path or context.graph_label_path != context.label_path[:-1]:
         raise GraphError(f"compiled node has invalid source context: {node.id}")
-    if node.id not in context.graph_step_ids.values():
+    if node.id not in scope_step_ids:
         raise GraphError(
             f"compiled node source scope does not contain its id: {node.id}"
         )
