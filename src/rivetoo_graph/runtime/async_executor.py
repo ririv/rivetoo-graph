@@ -98,6 +98,7 @@ class AsyncGraphExecutor:
                 concurrency=concurrency,
             )
         )
+        self.state.require_skip_requests_resolved()
         return self.state
 
     async def _execute_compilation(

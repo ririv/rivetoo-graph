@@ -67,6 +67,7 @@ class ParallelGraphExecutor:
         self.execution_control.require_running()
         self.state.begin_run()
         self._execute_compilation(graph, workers=workers)
+        self.state.require_skip_requests_resolved()
         return self.state
 
     def _execute_compilation(

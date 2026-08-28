@@ -58,7 +58,7 @@ def test_compiled_host_forwards_only_new_skip_requests() -> None:
     first = Step(lambda: None, label="first")
     second = Step(lambda: None, label="second")
     compilation = compile_graph(Graph(steps=(first, second)), root_label="root")
-    state = GraphExecutionState(skipped_steps={StepId((0,))})
+    state = GraphExecutionState(initial_skip_requests={StepId((0,))})
     host = CompiledExecutionHost(
         compilation,
         state,
@@ -69,7 +69,7 @@ def test_compiled_host_forwards_only_new_skip_requests() -> None:
     assert host.skipped_nodes() == [0]
     assert host.skipped_nodes() == []
 
-    state.skip_step(StepId((1,)))
+    state.request_skip(StepId((1,)))
     assert host.skipped_nodes() == [1]
     assert host.skipped_nodes() == []
 
@@ -222,7 +222,7 @@ def test_graph_plan_run_skips_marked_steps() -> None:
     )
 
     state = GraphExecutionState(
-        skipped_steps={StepId((1,))},
+        initial_skip_requests={StepId((1,))},
         results=GraphResultStore(),
     )
     GraphPlan(
@@ -233,6 +233,29 @@ def test_graph_plan_run_skips_marked_steps() -> None:
 
     assert calls == ["prepare"]
     assert state.executed_steps == [StepId((0,))]
+    assert state.skipped_steps == {StepId((1,))}
+
+
+def test_graph_plan_rejects_unknown_initial_skip_request() -> None:
+    graph = Graph(steps=(Step(lambda: None, label="build"),))
+
+    with pytest.raises(RuntimeError, match="unknown graph skip requests: 1"):
+        GraphPlan(
+            label="root",
+            graph=graph,
+            execution_state=GraphExecutionState(
+                initial_skip_requests={StepId((1,))}
+            ),
+        ).run(options=ThreadGraphRunOptions(workers=1))
+
+
+def test_execution_state_rejects_skip_after_step_start() -> None:
+    state = GraphExecutionState()
+    step_id = StepId((0,))
+    state.record_step(step_id, ("root", "build"))
+
+    with pytest.raises(RuntimeError, match="cannot skip an already started step: 0"):
+        state.request_skip(step_id)
 
 
 def test_graph_plan_run_uses_provided_state() -> None:
@@ -340,7 +363,7 @@ def test_graph_plan_run_does_not_record_results_for_skipped_steps() -> None:
         ),
     )
     state = GraphExecutionState(
-        skipped_steps={StepId((0,))},
+        initial_skip_requests={StepId((0,))},
         results=GraphResultStore(),
     )
 
@@ -1021,7 +1044,9 @@ def test_compiled_skipped_composite_preserves_prerequisite_boundary() -> None:
     GraphPlan(
         label="root",
         graph=graph,
-        execution_state=GraphExecutionState(skipped_steps={StepId((1,))}),
+        execution_state=GraphExecutionState(
+            initial_skip_requests={StepId((1,))}
+        ),
     ).run(
         options=ThreadGraphRunOptions(workers=2),
         mode="compiled",

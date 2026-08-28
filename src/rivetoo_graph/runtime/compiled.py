@@ -47,12 +47,13 @@ class CompiledExecutionHost:
     def skipped_nodes(self) -> list[int]:
         nodes: list[int] = []
         for step_id in (
-            self.state.skip_step_ids() - self._forwarded_skip_step_ids
+            self.state.skip_request_ids() - self._forwarded_skip_step_ids
         ):
             index = self._native_index_by_step_id.get(step_id)
             if index is None:
                 continue
             self._forwarded_skip_step_ids.add(step_id)
+            self.state.match_skip_request(step_id)
             nodes.append(index)
         return nodes
 
@@ -80,8 +81,7 @@ class CompiledExecutionHost:
                     self.complete_composite(node)
                 case 4:
                     step_id = self.compilation._native_node(node).id
-                    self._forwarded_skip_step_ids.add(step_id)
-                    self.state.skip_step(step_id)
+                    self.state.record_skipped_step(step_id)
                 case _:
                     raise GraphError(f"unknown native execution event: {kind}")
 
@@ -123,7 +123,6 @@ class CompiledExecutionHost:
             ".".join(compiled_node.context.label_path),
             reads,
         )
-        self.state.skip_step(compiled_node.id)
 
     def enter_composite(self, node: int) -> None:
         composite = self._require_composite(node)

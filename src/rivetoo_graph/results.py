@@ -103,10 +103,10 @@ class StepControl:
     _state: GraphExecutionState
 
     def skip_step(self, step_id: StepId) -> None:
-        self._state.skip_step(step_id)
+        self._state.request_skip(step_id)
 
     def skip_steps(self, step_ids: Iterable[StepId]) -> None:
-        self._state.skip_steps(step_ids)
+        self._state.request_skips(step_ids)
 
 
 @dataclass(slots=True)

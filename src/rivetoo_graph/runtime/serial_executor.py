@@ -68,6 +68,7 @@ class SerialGraphExecutor:
     ) -> GraphExecutionState:
         self.state.begin_run()
         self._execute_compilation(graph)
+        self.state.require_skip_requests_resolved()
         return self.state
 
     def _execute_compilation(
