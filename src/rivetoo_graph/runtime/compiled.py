@@ -38,6 +38,8 @@ class CompiledExecutionHost:
         self.run_leaf_callback = run_leaf
         self.execution_control = execution_control
         self.record_composites_as_steps = record_composites_as_steps
+        # 初始化一次遍历 V 个 native 节点，时间/空间均为 O(V)；之后每次
+        # advance 只处理尚未转发的新增请求 ΔS，不再扫描整张图。
         self._native_index_by_step_id = {
             node.id: index
             for index, node in enumerate(self.compilation._native_nodes)
