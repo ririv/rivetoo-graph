@@ -221,7 +221,7 @@ Rust compiler 会转换所有声明期已知子图：
 - composite 激活后才允许其直接子节点进入 ready
 - 全部直接子节点终态后 composite 才完成
 - 空 composite 激活后立即完成
-- `GraphObserve.before/after_success` 挂在 composite 生命周期上
+- `GraphObservationMessages.before/after_success` 挂在 composite 生命周期上
 
 因此增加 runtime condition、条件边或 observation 不会改变执行模型。action 在
 运行期返回的 `Graph` 无法提前编译；返回后会以当前叶子路径为显式输入，建立一个

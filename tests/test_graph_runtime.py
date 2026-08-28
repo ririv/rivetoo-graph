@@ -21,7 +21,7 @@ from rivetoo_graph import (
     GraphExecutionStopped,
     GraphMode,
     GraphObservationEvent,
-    GraphObserve,
+    GraphObservationMessages,
     GraphPlan,
     GraphResultStore,
     LeafAction,
@@ -1118,11 +1118,17 @@ def test_child_graph_observation_is_preserved(
 
     child = Graph.from_wiring(
         wiring=(Step(label="run", action=lambda: None).wire(),),
-        observe=GraphObserve(before="before child", after_success="after child"),
+        observation=GraphObservationMessages(
+            before="before child",
+            after_success="after child",
+        ),
     )
     graph = Graph.from_wiring(
         wiring=(Step(label="child", action=child).wire(),),
-        observe=GraphObserve(before="before root", after_success="after root"),
+        observation=GraphObservationMessages(
+            before="before root",
+            after_success="after root",
+        ),
     )
 
     GraphPlan(label="plan", graph=graph).run(

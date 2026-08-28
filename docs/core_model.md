@@ -45,7 +45,7 @@ GraphExecutionState
 - `edges: tuple[GraphEdge, ...]`
 - `capability_inputs: tuple[CapabilityInput, ...]`
 - `capability_outputs: tuple[CapabilityOutput, ...]`
-- `observe: GraphObserve`
+- `observation: GraphObservationMessages`
 - `static_condition_eval: StaticConditionEval | None`
 
 `Graph` 不负责执行，也不带 `run()`。
@@ -424,7 +424,7 @@ component log 在执行前通过 `GraphPlan.bind_component_log_path(step, path)`
 
 ## Observation 与执行状态
 
-`GraphObserve` 只保存只读展示消息：
+`GraphObservationMessages` 只保存只读展示消息：
 
 - `before`
 - `after_success`

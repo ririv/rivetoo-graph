@@ -193,9 +193,9 @@ def _emit_composite_observation(
     if observer is None:
         return
     message = (
-        composite.observe.before
+        composite.observation.before
         if phase is GraphObservationPhase.BEFORE
-        else composite.observe.after_success
+        else composite.observation.after_success
     )
     if message is None:
         return

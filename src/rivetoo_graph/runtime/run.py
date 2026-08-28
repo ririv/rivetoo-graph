@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
-    from ..model import Graph, GraphObserve, Step, StepId, StepLabelPath
+    from ..model import Graph, GraphObservationMessages, Step, StepId, StepLabelPath
     from ..observe import GraphObserver
     from .state import GraphExecutionState
 
@@ -70,8 +70,8 @@ class CompiledGraphRun:
         return self.compilation.label
 
     @property
-    def observe(self) -> GraphObserve:
-        return self.compilation.observe
+    def observation(self) -> GraphObservationMessages:
+        return self.compilation.observation
 
     @property
     def source_graph(self) -> Graph:

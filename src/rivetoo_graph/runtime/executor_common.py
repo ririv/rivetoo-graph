@@ -63,9 +63,9 @@ def emit_graph_observation(
     if observer is None:
         return
     message = (
-        graph.observe.before
+        graph.observation.before
         if phase == GraphObservationPhase.BEFORE
-        else graph.observe.after_success
+        else graph.observation.after_success
     )
     if message is None:
         return

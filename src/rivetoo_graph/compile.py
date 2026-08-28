@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from .model import (
         ConditionalEdgePredicate,
         Graph,
-        GraphObserve,
+        GraphObservationMessages,
         LeafAction,
         Step,
         StepLabelPath,
@@ -130,7 +130,7 @@ class CompiledComposite:
     after: tuple[CompiledPrerequisite, ...]
     when: CompiledRuntimeCondition | None
     owner: CompiledCompositeRef | None
-    observe: GraphObserve
+    observation: GraphObservationMessages
     context: CompiledStepContext
     graph_step_ids: Mapping[Step, StepId]
 
@@ -209,8 +209,8 @@ class GraphCompilation:
     )
 
     @property
-    def observe(self) -> GraphObserve:
-        return self.source_graph.observe
+    def observation(self) -> GraphObservationMessages:
+        return self.source_graph.observation
 
     def __post_init__(self) -> None:
         if not self.label:
@@ -708,7 +708,7 @@ def _materialize_native_compilation(
             after=after,
             when=when,
             owner=owner,
-            observe=source_graphs[child_graph].observe,
+            observation=source_graphs[child_graph].observation,
             context=context,
             graph_step_ids=graph_step_ids[child_graph],
         )

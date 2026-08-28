@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class GraphObserve:
+class GraphObservationMessages:
     before: str | None = None
     after_success: str | None = None
 
@@ -448,7 +448,7 @@ class GraphWiring:
         label: str | None = None,
         capability_inputs: tuple[CapabilityInput, ...] = (),
         capability_outputs: tuple[CapabilityOutput, ...] = (),
-        observe: GraphObserve | None = None,
+        observation: GraphObservationMessages | None = None,
         static_condition_eval: StaticConditionEval | None = None,
     ) -> Graph:
         """将当前接线显式物化为一张 Graph。"""
@@ -458,7 +458,7 @@ class GraphWiring:
             label=label,
             capability_inputs=capability_inputs,
             capability_outputs=capability_outputs,
-            observe=observe,
+            observation=observation,
             static_condition_eval=static_condition_eval,
         )
 
@@ -493,7 +493,9 @@ class Graph:
     edges: tuple[GraphEdge, ...] = field(default_factory=tuple)
     capability_inputs: tuple[CapabilityInput, ...] = field(default_factory=tuple)
     capability_outputs: tuple[CapabilityOutput, ...] = field(default_factory=tuple)
-    observe: GraphObserve = field(default_factory=GraphObserve)
+    observation: GraphObservationMessages = field(
+        default_factory=GraphObservationMessages
+    )
     static_condition_eval: StaticConditionEval | None = None
 
     @classmethod
@@ -504,7 +506,7 @@ class Graph:
         label: str | None = None,
         capability_inputs: tuple[CapabilityInput, ...] = (),
         capability_outputs: tuple[CapabilityOutput, ...] = (),
-        observe: GraphObserve | None = None,
+        observation: GraphObservationMessages | None = None,
         static_condition_eval: StaticConditionEval | None = None,
     ) -> Graph:
         normalized = (
@@ -518,7 +520,9 @@ class Graph:
             edges=normalized.edges,
             capability_inputs=capability_inputs,
             capability_outputs=capability_outputs,
-            observe=GraphObserve() if observe is None else observe,
+            observation=(
+                GraphObservationMessages() if observation is None else observation
+            ),
             static_condition_eval=static_condition_eval,
         )
 
