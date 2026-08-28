@@ -264,7 +264,7 @@ def test_run_compiled_matches_dynamic_run_and_preserves_local_step_lookup() -> N
 
 def test_run_compiled_skips_composite_step_by_prefix() -> None:
     state = GraphExecutionState(
-        skipped_steps={StepId((1,))},
+        initial_skip_requests={StepId((1,))},
         results=GraphResultStore(),
     )
     plan = GraphPlan(label="root", graph=_make_value_graph(), execution_state=state)

@@ -79,6 +79,7 @@ class SerialGraphExecutor:
                 self._execute_compilation(graph)
             case FrozenGraph():
                 self._execute_graph(DynamicGraphRun(graph), graph_label_path=())
+        self.state.require_skip_requests_resolved()
         return self.state
 
     def _execute_compilation(self, compilation: GraphCompilation) -> None:
@@ -203,7 +204,8 @@ class SerialGraphExecutor:
                 step,
                 graph_label_path=graph_label_path,
             )
-            if self.state.is_skipped(step.id):
+            if self.state.is_skip_requested(step.id):
+                self.state.record_skipped_step(step.id)
                 continue
             self.state.record_step(step.id, step_label_path)
 
@@ -305,7 +307,8 @@ class SerialGraphExecutor:
                 step,
                 graph_label_path=graph_label_path,
             )
-            if self.state.is_skipped(step.id):
+            if self.state.is_skip_requested(step.id):
+                self.state.record_skipped_step(step.id)
                 finished_step_ids.add(step_id)
                 refresh_ready_dynamic_steps(
                     run,
@@ -323,7 +326,7 @@ class SerialGraphExecutor:
             match step_state:
                 case DynamicStepState.DISABLED:
                     log_disabled_step_condition(step, label_path=step_label_path)
-                    self.state.skip_step(step.id)
+                    self.state.record_skipped_step(step.id)
                     finished_step_ids.add(step_id)
                     refresh_ready_dynamic_steps(
                         run,

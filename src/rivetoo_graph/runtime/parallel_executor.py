@@ -86,6 +86,7 @@ class ParallelGraphExecutor:
                     graph_label_path=(),
                     workers=workers,
                 )
+        self.state.require_skip_requests_resolved()
         return self.state
 
     def _execute_compilation(
@@ -223,7 +224,8 @@ class ParallelGraphExecutor:
                         step,
                         graph_label_path=graph_label_path,
                     )
-                    if self.state.is_skipped(step.id):
+                    if self.state.is_skip_requested(step.id):
+                        self.state.record_skipped_step(step.id)
                         sorter.done(step_id)
                         ready.extend(sorter.get_ready())
                         continue
@@ -329,7 +331,8 @@ class ParallelGraphExecutor:
                         step,
                         graph_label_path=graph_label_path,
                     )
-                    if self.state.is_skipped(step.id):
+                    if self.state.is_skip_requested(step.id):
+                        self.state.record_skipped_step(step.id)
                         finished_step_ids.add(step_id)
                         refresh_ready_dynamic_steps(
                             run,
@@ -350,7 +353,7 @@ class ParallelGraphExecutor:
                                 step,
                                 label_path=step_label_path,
                             )
-                            self.state.skip_step(step.id)
+                            self.state.record_skipped_step(step.id)
                             finished_step_ids.add(step_id)
                             refresh_ready_dynamic_steps(
                                 run,

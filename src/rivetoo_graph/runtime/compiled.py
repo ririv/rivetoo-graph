@@ -106,7 +106,7 @@ class CompiledScheduler:
             step = self._ready.popleft()
             if self._states[step.id] is not _CompiledNodeState.READY:
                 continue
-            if self.state.is_skipped(step.id):
+            if self.state.is_skip_requested(step.id):
                 self._skip_node(step, record_path=False)
                 self._drain_evaluations()
                 continue
@@ -160,7 +160,7 @@ class CompiledScheduler:
             if owner_state is not _CompiledNodeState.ACTIVE:
                 return
 
-        explicitly_skipped = self.state.is_skipped(node.id)
+        explicitly_skipped = self.state.is_skip_requested(node.id)
         if node.when is not None and not explicitly_skipped:
             condition_value = self._condition_value(
                 node,
@@ -272,8 +272,8 @@ class CompiledScheduler:
         self._notify_terminal(composite)
 
     def _skip_node(self, node: CompiledNode, *, record_path: bool) -> None:
-        if record_path:
-            self.state.skip_step(node.id)
+        del record_path
+        self.state.record_skipped_step(node.id)
         if isinstance(node, CompiledComposite):
             self._mark_descendants_skipped(node)
         self._states[node.id] = _CompiledNodeState.SKIPPED
