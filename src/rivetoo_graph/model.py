@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypeGuard
 
 from ._native import dag_cycle
-from .capability import CapabilityBinding, CapabilityInput, CapabilityOutput
+from .capability import CapabilitiesInput, CapabilityBinding, CapabilityInterface
 from .errors import GraphError
 from .static_condition import StaticCondition, StaticConditionEval
 from .topology import Arc
@@ -241,10 +241,7 @@ def _validated_blocking_arcs(
                     "capability consumer must be a graph-valued step: "
                     f"{edge.target.label}"
                 )
-            if not any(
-                input_port.capability == edge.capability
-                for input_port in consumer_graph.capability_inputs
-            ):
+            if edge.capability not in consumer_graph.capabilities.inputs:
                 raise GraphError(
                     f"component {edge.target.label} does not require capability "
                     f"{edge.capability.name}"
@@ -256,12 +253,8 @@ def _validated_blocking_arcs(
                 )
             provider_graph = edge.source.action
             if isinstance(provider_graph, Graph):
-                output = next(
-                    output
-                    for output in provider_graph.capability_outputs
-                    if output.capability == edge.capability
-                )
-                if isinstance(output.ready_after.when, RuntimeCondition):
+                output = provider_graph.capabilities.outputs[edge.capability]
+                if isinstance(output.when, RuntimeCondition):
                     raise GraphError(
                         f"graph '{graph_label}' capability output step must not have "
                         f"a runtime condition: {edge.capability.name}"
@@ -446,8 +439,7 @@ class GraphWiring:
         self,
         *,
         label: str | None = None,
-        capability_inputs: tuple[CapabilityInput, ...] = (),
-        capability_outputs: tuple[CapabilityOutput, ...] = (),
+        capabilities: CapabilitiesInput | None = None,
         observation: GraphObservationMessages | None = None,
         static_condition_eval: StaticConditionEval | None = None,
     ) -> Graph:
@@ -456,8 +448,7 @@ class GraphWiring:
         return Graph.from_wiring(
             self,
             label=label,
-            capability_inputs=capability_inputs,
-            capability_outputs=capability_outputs,
+            capabilities=capabilities,
             observation=observation,
             static_condition_eval=static_condition_eval,
         )
@@ -467,7 +458,7 @@ type GraphWiringOperand = Step | Graph | GraphWiring
 type GraphWiringInput = tuple[StepWiring, ...] | GraphWiring
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Graph:
     """DAG 图结构本体。
 
@@ -491,12 +482,38 @@ class Graph:
     label: str | None = None
     steps: tuple[Step, ...] = field(default_factory=tuple)
     edges: tuple[GraphEdge, ...] = field(default_factory=tuple)
-    capability_inputs: tuple[CapabilityInput, ...] = field(default_factory=tuple)
-    capability_outputs: tuple[CapabilityOutput, ...] = field(default_factory=tuple)
+    capabilities: CapabilityInterface = field(default_factory=CapabilityInterface)
     observation: GraphObservationMessages = field(
         default_factory=GraphObservationMessages
     )
     static_condition_eval: StaticConditionEval | None = None
+
+    def __init__(
+        self,
+        label: str | None = None,
+        steps: tuple[Step, ...] = (),
+        edges: tuple[GraphEdge, ...] = (),
+        capabilities: CapabilitiesInput | None = None,
+        observation: GraphObservationMessages | None = None,
+        static_condition_eval: StaticConditionEval | None = None,
+    ) -> None:
+        object.__setattr__(self, "label", label)
+        object.__setattr__(self, "steps", steps)
+        object.__setattr__(self, "edges", edges)
+        object.__setattr__(
+            self,
+            "capabilities",
+            CapabilityInterface()
+            if capabilities is None
+            else CapabilityInterface.resolve(capabilities),
+        )
+        object.__setattr__(
+            self,
+            "observation",
+            GraphObservationMessages() if observation is None else observation,
+        )
+        object.__setattr__(self, "static_condition_eval", static_condition_eval)
+        self._validate()
 
     @classmethod
     def from_wiring(
@@ -504,8 +521,7 @@ class Graph:
         wiring: GraphWiringInput,
         *,
         label: str | None = None,
-        capability_inputs: tuple[CapabilityInput, ...] = (),
-        capability_outputs: tuple[CapabilityOutput, ...] = (),
+        capabilities: CapabilitiesInput | None = None,
         observation: GraphObservationMessages | None = None,
         static_condition_eval: StaticConditionEval | None = None,
     ) -> Graph:
@@ -518,8 +534,7 @@ class Graph:
             label=label,
             steps=normalized.steps,
             edges=normalized.edges,
-            capability_inputs=capability_inputs,
-            capability_outputs=capability_outputs,
+            capabilities=capabilities,
             observation=(
                 GraphObservationMessages() if observation is None else observation
             ),
@@ -553,7 +568,7 @@ class Graph:
             if edge.target is step and not isinstance(edge, CapabilityBinding)
         )
 
-    def __post_init__(self) -> None:
+    def _validate(self) -> None:
         if self.label == "":
             raise GraphError("graph label must not be empty")
 
@@ -565,8 +580,7 @@ class Graph:
         )
         _validate_capability_interface(
             steps=self.steps,
-            capability_inputs=self.capability_inputs,
-            capability_outputs=self.capability_outputs,
+            capabilities=self.capabilities,
             graph_label=graph_label,
         )
 
@@ -684,59 +698,46 @@ def _validate_graph_topology(
 def _validate_capability_interface(
     *,
     steps: tuple[Step, ...],
-    capability_inputs: tuple[CapabilityInput, ...],
-    capability_outputs: tuple[CapabilityOutput, ...],
+    capabilities: CapabilityInterface,
     graph_label: str,
 ) -> None:
-    seen_inputs = set()
-    for input_port in capability_inputs:
-        mount_count = _descendant_step_mount_count(steps, input_port.needed_by)
-        if mount_count == 0:
-            raise GraphError(
-                f"graph '{graph_label}' capability input "
-                f"'{input_port.capability.name}' references a step outside this graph"
-            )
-        if mount_count > 1:
-            raise GraphError(
-                f"graph '{graph_label}' capability input "
-                f"'{input_port.capability.name}' references a step mounted more than once"
-            )
-        if input_port.capability in seen_inputs:
-            raise GraphError(
-                f"graph '{graph_label}' declares duplicate capability input: "
-                f"{input_port.capability.name}"
-            )
-        seen_inputs.add(input_port.capability)
-
-    seen_outputs = set()
-    for output_port in capability_outputs:
-        mount_count = _descendant_step_mount_count(steps, output_port.ready_after)
-        if mount_count == 0:
-            raise GraphError(
-                f"graph '{graph_label}' capability output "
-                f"'{output_port.capability.name}' references a step outside this graph"
-            )
-        if mount_count > 1:
-            raise GraphError(
-                f"graph '{graph_label}' capability output "
-                f"'{output_port.capability.name}' references a step mounted more than once"
-            )
-        if output_port.capability in seen_outputs:
-            raise GraphError(
-                f"graph '{graph_label}' declares duplicate capability output: "
-                f"{output_port.capability.name}"
-            )
-        seen_outputs.add(output_port.capability)
-
-
-def _descendant_step_mount_count(steps: tuple[Step, ...], target: Step) -> int:
-    count = 0
-    for step in steps:
-        if step is target:
-            count += 1
+    # 一次遍历挂载结构建立计数，避免为每个端口重新扫描全部子图。
+    # V 为所有挂载的步骤数，R 为端口引用数：时间 O(V + R)，空间 O(V)。
+    if not capabilities.inputs and not capabilities.outputs:
+        return
+    mount_counts: dict[Step, int] = {}
+    pending = list(steps)
+    while pending:
+        step = pending.pop()
+        mount_counts[step] = mount_counts.get(step, 0) + 1
         if isinstance(step.action, Graph):
-            count += _descendant_step_mount_count(step.action.steps, target)
-    return count
+            pending.extend(step.action.steps)
+
+    for capability, input_steps in capabilities.inputs.items():
+        for step in input_steps:
+            mount_count = mount_counts.get(step, 0)
+            if mount_count == 0:
+                raise GraphError(
+                    f"graph '{graph_label}' capability input "
+                    f"'{capability.name}' references a step outside this graph"
+                )
+            if mount_count > 1:
+                raise GraphError(
+                    f"graph '{graph_label}' capability input "
+                    f"'{capability.name}' references a step mounted more than once"
+                )
+    for capability, step in capabilities.outputs.items():
+        mount_count = mount_counts.get(step, 0)
+        if mount_count == 0:
+            raise GraphError(
+                f"graph '{graph_label}' capability output "
+                f"'{capability.name}' references a step outside this graph"
+            )
+        if mount_count > 1:
+            raise GraphError(
+                f"graph '{graph_label}' capability output "
+                f"'{capability.name}' references a step mounted more than once"
+            )
 
 
 def _validated_steps(

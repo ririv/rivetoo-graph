@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from ._native import resolve_capability_bindings
@@ -23,20 +25,53 @@ class Capability:
             raise GraphError("capability name must be non-empty and stripped")
 
 
-@dataclass(frozen=True, slots=True)
-class CapabilityInput:
-    """The internal step at which a graph starts requiring a capability."""
-
-    capability: Capability
-    needed_by: Step
+type CapabilityInputs = Mapping[Capability, Step | tuple[Step, ...]] | Graph
+type CapabilityOutputs = Mapping[Capability, Step] | Graph
+type CapabilitiesInput = CapabilityInterface | Graph
 
 
-@dataclass(frozen=True, slots=True)
-class CapabilityOutput:
-    """The internal step after which a graph provides a capability."""
+@dataclass(frozen=True, slots=True, init=False)
+class CapabilityInterface:
+    """An immutable public interface with explicit input and output forwarding."""
 
-    capability: Capability
-    ready_after: Step
+    inputs: Mapping[Capability, tuple[Step, ...]]
+    outputs: Mapping[Capability, Step]
+
+    def __init__(
+        self,
+        *,
+        inputs: CapabilityInputs = MappingProxyType({}),
+        outputs: CapabilityOutputs = MappingProxyType({}),
+    ) -> None:
+        from .model import Graph, Step
+
+        input_mapping = (
+            inputs.capabilities.inputs if isinstance(inputs, Graph) else inputs
+        )
+        output_mapping = (
+            outputs.capabilities.outputs if isinstance(outputs, Graph) else outputs
+        )
+        normalized_inputs = {}
+        # O(P + R)：P 为端口数，R 为全部输入步骤引用数；复制映射隔离调用方修改。
+        for capability, value in input_mapping.items():
+            steps = (value,) if isinstance(value, Step) else value
+            if not steps:
+                raise GraphError(
+                    f"capability input must reference at least one step: {capability.name}"
+                )
+            if len(set(steps)) != len(steps):
+                raise GraphError(
+                    f"capability input contains duplicate steps: {capability.name}"
+                )
+            normalized_inputs[capability] = steps
+        object.__setattr__(self, "inputs", MappingProxyType(normalized_inputs))
+        object.__setattr__(self, "outputs", MappingProxyType(dict(output_mapping)))
+
+    @classmethod
+    def resolve(cls, value: CapabilitiesInput) -> CapabilityInterface:
+        from .model import Graph
+
+        return value.capabilities if isinstance(value, Graph) else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,11 +79,7 @@ class AnyProviderRequirement:
     """A consumer requirement that does not name its concrete provider."""
 
     consumer: Step
-    input: CapabilityInput
-
-    @property
-    def capability(self) -> Capability:
-        return self.input.capability
+    capability: Capability
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +88,7 @@ class ExactProviderRequirement:
 
     consumer: Step
     provider: Step
-    input: CapabilityInput
-
-    @property
-    def capability(self) -> Capability:
-        return self.input.capability
+    capability: Capability
 
 
 type CapabilityRequirement = AnyProviderRequirement | ExactProviderRequirement
@@ -105,8 +132,8 @@ def resolve_capability_requirements(
 
     capabilities: dict[Capability, int] = {}
     for graph in component_graphs:
-        for output in graph.capability_outputs:
-            capabilities.setdefault(output.capability, len(capabilities))
+        for capability in graph.capabilities.outputs:
+            capabilities.setdefault(capability, len(capabilities))
     for requirement in declared_requirements:
         capabilities.setdefault(requirement.capability, len(capabilities))
 
@@ -120,7 +147,7 @@ def resolve_capability_requirements(
         )
         _require_declared_capability_input(
             requirement.consumer,
-            requirement.input,
+            requirement.capability,
         )
         match requirement:
             case ExactProviderRequirement(provider=provider):
@@ -151,7 +178,7 @@ def resolve_capability_requirements(
         for selection in declared_selections
     ]
     component_outputs = [
-        [capabilities[output.capability] for output in graph.capability_outputs]
+        [capabilities[capability] for capability in graph.capabilities.outputs]
         for graph in component_graphs
     ]
     try:
@@ -213,26 +240,24 @@ def _require_component_graph(component: Step) -> Graph:
 
 def _require_declared_capability_input(
     component: Step,
-    required_input: CapabilityInput,
-) -> CapabilityInput:
+    capability: Capability,
+) -> None:
     graph = _require_component_graph(component)
-    for input_port in graph.capability_inputs:
-        if input_port is required_input:
-            return input_port
+    if capability in graph.capabilities.inputs:
+        return
     raise GraphError(
         f"component {_step_label(component)} does not require capability "
-        f"{required_input.capability.name} through the referenced input"
+        f"{capability.name}"
     )
 
 
 def _require_capability_output(
     component: Step,
     capability: Capability,
-) -> CapabilityOutput:
+) -> Step:
     graph = _require_component_graph(component)
-    for output_port in graph.capability_outputs:
-        if output_port.capability == capability:
-            return output_port
+    if capability in graph.capabilities.outputs:
+        return graph.capabilities.outputs[capability]
     raise GraphError(
         f"component {_step_label(component)} does not provide capability "
         f"{capability.name}"

@@ -43,8 +43,8 @@ GraphExecutionState
 - `label: str | None`
 - `steps: tuple[Step, ...]`
 - `edges: tuple[GraphEdge, ...]`
-- `capability_inputs: tuple[CapabilityInput, ...]`
-- `capability_outputs: tuple[CapabilityOutput, ...]`
+- `capabilities: CapabilityInterface`：统一持有输入和输出的只读映射；声明时也可传入
+  内部 Graph，显式转发它的完整接口。
 - `observation: GraphObservationMessages`
 - `static_condition_eval: StaticConditionEval | None`
 

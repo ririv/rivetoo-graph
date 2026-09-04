@@ -17,15 +17,14 @@ B requires 123
 
 一张 Graph 可以声明多个能力入口和出口：
 
-- `CapabilityInput`
-  - 表示从哪个内部 Step 开始需要该能力
-- `CapabilityOutput`
-  - 表示哪个内部 Step 完成后该能力已经就绪
+- `CapabilityInterface.inputs`：能力到内部 Step 的映射；一个能力可以对应多个
+  Step，分别约束它们开始消费能力的位置。
+- `CapabilityInterface.outputs`：能力到内部 Step 的映射；该 Step 完成后能力就绪。
 
 它们引用真实 Step，不会生成空 action、事件 Step 或其它假节点。
 
 ```python
-from rivetoo_graph import Capability, CapabilityInput, CapabilityOutput
+from rivetoo_graph import Capability, CapabilityInterface
 
 capability_123 = Capability("123")
 
@@ -33,24 +32,16 @@ a_graph = (
     a_1 >> a_2 >> a_3 >> a_4 >> a_5
 ).graph(
     label="A",
-    capability_outputs=(
-        CapabilityOutput(
-            capability=capability_123,
-            ready_after=a_3,
-        ),
+    capabilities=CapabilityInterface(
+        outputs={capability_123: a_3},
     ),
-)
-
-b_input = CapabilityInput(
-    capability=capability_123,
-    needed_by=b_b,
 )
 
 b_graph = (
     b_a >> b_b >> b_c >> b_d >> b_e
 ).graph(
     label="B",
-    capability_inputs=(b_input,),
+    capabilities=CapabilityInterface(inputs={capability_123: b_b}),
 )
 
 a = a_graph.step(label="A")
@@ -68,12 +59,9 @@ Step。后者用于给现有子图外包一层前置或后处理流程，同时�
 wrapped = (
     prepare >> child_graph >> normalize
 ).graph(
-    capability_inputs=child_graph.capability_inputs,
-    capability_outputs=(
-        CapabilityOutput(
-            capability=installed_runtime,
-            ready_after=normalize,
-        ),
+    capabilities=CapabilityInterface(
+        inputs=child_graph,
+        outputs={installed_runtime: normalize},
     ),
 )
 ```
@@ -82,12 +70,63 @@ wrapped = (
 
 ```python
 graph = prepared_wiring.graph(
-    capability_inputs=(CapabilityInput(toolchain, compile_stage),),
-    capability_outputs=(CapabilityOutput(installed_runtime, install_stage),),
+    capabilities=CapabilityInterface(
+        inputs={toolchain: compile_stage},
+        outputs={installed_runtime: install_stage},
+    ),
 )
 ```
 
 能力接口属于 Graph 的结构契约，不提供在 Graph 物化后覆盖、合并或补充端口的入口。
+
+## 转发与复用
+
+三种 Graph 构造入口 `Graph(...)`、`Graph.from_wiring(...)`、`wiring.graph(...)`
+均接受同一个 `capabilities` 参数。不写时使用空接口，不会自动公开内部图的端口。
+
+```python
+# 整体转发，保留子图边界，不复制 Step。
+outer = (prepare >> child_graph).graph(capabilities=child_graph)
+
+# 分方向转发；输出以最终收尾步骤为准，不公开 child 原来的输出。
+outer = (child_graph >> normalize).graph(
+    capabilities=CapabilityInterface(
+        inputs=child_graph,
+        outputs={installed_runtime: normalize},
+    ),
+)
+
+# 也可以直接复用规范化后的映射。
+interface = CapabilityInterface(inputs=child_graph.capabilities.inputs)
+
+# 可以保存并复用完整接口，或者只复用共享字典。
+shared_inputs = {toolchain: compile_stage}
+shared = CapabilityInterface(inputs=shared_inputs)
+another = CapabilityInterface(inputs=shared.inputs)
+```
+
+`inputs=graph` 只转发输入，`outputs=graph` 只转发输出。它们与分别传入
+`graph.capabilities.inputs` / `graph.capabilities.outputs` 等价。
+构造接口时复制映射，并保存为只读视图；修改调用方原字典不会改变既有声明。
+输入值统一归一化为非空 Step 元组，输出值始终是一个 Step。
+复用的 Step 必须位于最终图中，且只能挂载一次，不能因为转发而指向图外步骤。
+
+同一能力只占一个字典键；不要写重复键，Python 会在调用 API 前覆盖它，图无法
+诊断被覆盖的条目。需要约束多个步骤时应写在同一键下：
+
+```python
+consumer = (
+    (prepare_a >> configure_a) | (prepare_b >> configure_b)
+).graph(
+    capabilities=CapabilityInterface(
+        inputs={toolchain: (configure_a, configure_b)},
+    ),
+)
+```
+
+两个 prepare 都不需要等待工具链；两个 configure 各自等待自己的前驱和工具链，
+彼此不互相等待。外部只连接一次该能力，编译器将绑定展开到全部输入步骤，不插入
+空 action 或共享等待节点。输出暂不支持多个步骤，避免隐式引入“全部/任一就绪”语义。
 
 ## 两种需求
 
@@ -105,7 +144,7 @@ type CapabilityRequirement = (
 ```python
 AnyProviderRequirement(
     consumer=b,
-    input=b_input,
+    capability=capability_123,
 )
 ```
 
@@ -115,7 +154,7 @@ AnyProviderRequirement(
 ExactProviderRequirement(
     consumer=b,
     provider=a,
-    input=b_input,
+    capability=capability_123,
 )
 ```
 
@@ -147,7 +186,7 @@ ExactProviderRequirement(A.123)
 # 这里的 c 是另一个同样提供 capability_123 的 graph-valued Step。
 requirement = AnyProviderRequirement(
     consumer=b,
-    input=b_input,
+    capability=capability_123,
 )
 
 bindings = resolve_capability_requirements(
@@ -186,7 +225,7 @@ B 依赖 A。A 有第 1、2、3、4、5 步，并把第 3 步声明成自己的�
 两边可以同时运行。
 
 如果 B 还需要 C 提供的另一项能力，可以为另一个内部 Step 声明另一个
-`CapabilityInput`。B 不存在一个覆盖全部依赖的唯一入口；每项能力分别连接到真正开始
+输入映射条目。B 不存在一个覆盖全部依赖的唯一入口；每项能力分别连接到真正开始
 消费它的位置。
 
 ## 编译与执行
@@ -216,13 +255,13 @@ GraphPlan(label="root", graph=graph).run(mode="dynamic")
 ```rust
 struct AnyProviderRequirement {
     consumer: StepHandle,
-    input: CapabilityInputHandle,
+    capability: Capability,
 }
 
 struct ExactProviderRequirement {
     consumer: StepHandle,
     provider: StepHandle,
-    input: CapabilityInputHandle,
+    capability: Capability,
 }
 
 enum CapabilityRequirement {

@@ -345,25 +345,24 @@ impl<'py> Collector<'py> {
         let provider_graph = self.require_child_graph(provider_component)?;
         let consumer_graph = self.require_child_graph(consumer_component)?;
         let provider_port = require_capability_port(
-            self.py,
             self.graphs[provider_graph].source_graph.bind(self.py),
-            "capability_outputs",
+            "outputs",
             &capability,
         )?;
         let consumer_port = require_capability_port(
-            self.py,
             self.graphs[consumer_graph].source_graph.bind(self.py),
-            "capability_inputs",
+            "inputs",
             &capability,
         )?;
-        let provider = self
-            .require_descendant_node(provider_component, &provider_port.getattr("ready_after")?)?;
-        let consumer =
-            self.require_descendant_node(consumer_component, &consumer_port.getattr("needed_by")?)?;
-        self.capability_bindings.push(CapabilityBinding::new(
-            NodeId::new(provider),
-            NodeId::new(consumer),
-        ));
+        let provider = self.require_descendant_node(provider_component, &provider_port)?;
+        // 一个公开输入可以约束多个内部步骤；不插入额外的运行时等待节点。
+        for step in consumer_port.try_iter()? {
+            let consumer = self.require_descendant_node(consumer_component, &step?)?;
+            self.capability_bindings.push(CapabilityBinding::new(
+                NodeId::new(provider),
+                NodeId::new(consumer),
+            ));
+        }
         Ok(())
     }
 
@@ -495,21 +494,15 @@ fn object_key(value: &Bound<'_, PyAny>) -> usize {
 }
 
 fn require_capability_port<'py>(
-    py: Python<'py>,
     graph: &Bound<'py, PyAny>,
     attribute: &str,
     capability: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    for port in graph.getattr(attribute)?.try_iter()? {
-        let port = port?;
-        if port.getattr("capability")?.eq(capability)? {
-            return Ok(port);
-        }
-    }
-    let _ = py;
-    Err(PyValueError::new_err(format!(
-        "component has no matching {attribute} port"
-    )))
+    // 映射按能力直接查找，平均 O(1)，不再逐端口跨语言扫描。
+    graph
+        .getattr("capabilities")?
+        .getattr(attribute)?
+        .get_item(capability)
 }
 
 /// Native compilation plus opaque Python declaration metadata.

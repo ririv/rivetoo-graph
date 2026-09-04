@@ -1,9 +1,9 @@
 from .capability import (
     AnyProviderRequirement,
+    CapabilitiesInput,
     Capability,
     CapabilityBinding,
-    CapabilityInput,
-    CapabilityOutput,
+    CapabilityInterface,
     CapabilityRequirement,
     CapabilitySelection,
     ExactProviderRequirement,
@@ -94,9 +94,9 @@ from .static_condition import (
 from .topology import Arc, DAGTopology, DirectedTopology, TopologyCycleError
 
 __all__ = [
+    "CapabilitiesInput",
+    "CapabilityInterface",
     "Capability",
-    "CapabilityInput",
-    "CapabilityOutput",
     "CapabilityRequirement",
     "AnyProviderRequirement",
     "ExactProviderRequirement",

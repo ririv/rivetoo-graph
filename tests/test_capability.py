@@ -7,12 +7,12 @@ import pytest
 from rivetoo_graph import (
     AnyProviderRequirement,
     Capability,
-    CapabilityInput,
-    CapabilityOutput,
+    CapabilityInterface,
     CapabilitySelection,
     ExactProviderRequirement,
     Graph,
     GraphError,
+    GraphMode,
     GraphPlan,
     Step,
     ThreadGraphRunOptions,
@@ -20,10 +20,120 @@ from rivetoo_graph import (
 )
 
 
-def _input_of(component: Step) -> CapabilityInput:
+def _input_of(component: Step) -> Capability:
     action = component.action
     assert isinstance(action, Graph)
-    return action.capability_inputs[0]
+    return next(iter(action.capabilities.inputs))
+
+
+def test_capability_interface_copies_mappings_and_reuses_normalized_inputs() -> None:
+    sdk = Capability("sdk")
+    library = Capability("library")
+    configure = Step(lambda: None)
+    install = Step(lambda: None)
+    inputs = {sdk: configure}
+    outputs = {library: install}
+    shared = CapabilityInterface(inputs=inputs, outputs=outputs)
+    inputs.clear()
+    outputs.clear()
+    assert dict(shared.inputs) == {sdk: (configure,)}
+    assert dict(shared.outputs) == {library: install}
+    reused = CapabilityInterface(inputs=shared.inputs)
+    assert reused.inputs == shared.inputs
+    assert not reused.outputs
+
+
+def test_graph_forwards_complete_or_selected_interface_without_flattening() -> None:
+    sdk = Capability("sdk")
+    library = Capability("library")
+    final = Capability("final")
+    configure = Step(lambda: None)
+    install = Step(lambda: None)
+    finish = Step(lambda: None)
+    child = (configure >> install).graph(
+        capabilities=CapabilityInterface(
+            inputs={sdk: configure}, outputs={library: install}
+        )
+    )
+    forwarded = (child >> finish).graph(capabilities=child)
+    assert forwarded.capabilities is child.capabilities
+    assert forwarded.steps[0].action is child
+    custom = (child >> finish).graph(
+        capabilities=CapabilityInterface(inputs=child, outputs={final: finish})
+    )
+    assert custom.capabilities.inputs == child.capabilities.inputs
+    assert dict(custom.capabilities.outputs) == {final: finish}
+    outputs_only = Graph(
+        steps=(child.step(),), capabilities=CapabilityInterface(outputs=child)
+    )
+    assert not outputs_only.capabilities.inputs
+    assert outputs_only.capabilities.outputs == child.capabilities.outputs
+    # 不声明接口时，不自动暴露内部图的端口。
+    assert not (child >> finish).graph().capabilities.inputs
+    assert not (child >> finish).graph().capabilities.outputs
+
+
+@pytest.mark.parametrize("mode", ("compiled", "dynamic"))
+def test_one_input_unlocks_multiple_independent_steps(mode: GraphMode) -> None:
+    sdk = Capability("sdk")
+    a_prepared, b_prepared, a_started, b_started, sdk_ready = (
+        Event() for _ in range(5)
+    )
+
+    def provide() -> None:
+        _require_event(a_prepared, "a preparation did not run before SDK")
+        _require_event(b_prepared, "b preparation did not run before SDK")
+        sdk_ready.set()
+
+    def configure_a() -> None:
+        assert sdk_ready.is_set()
+        a_started.set()
+        _require_event(b_started, "b input was serialized after a")
+
+    def configure_b() -> None:
+        assert sdk_ready.is_set()
+        b_started.set()
+        _require_event(a_started, "a input was serialized after b")
+
+    ready = Step(provide)
+    provider = Graph(
+        steps=(ready,), capabilities=CapabilityInterface(outputs={sdk: ready})
+    ).step()
+    a, b = Step(configure_a), Step(configure_b)
+    consumer = (
+        ((Step(a_prepared.set) >> a) | (Step(b_prepared.set) >> b))
+        .graph(capabilities=CapabilityInterface(inputs={sdk: (a, b)}))
+        .step()
+    )
+    bindings = resolve_capability_requirements(
+        (provider, consumer),
+        (
+            ExactProviderRequirement(
+                consumer=consumer, provider=provider, capability=sdk
+            ),
+        ),
+    )
+    GraphPlan(
+        label="root", graph=Graph(steps=(provider, consumer), edges=bindings)
+    ).run(ThreadGraphRunOptions(workers=4), mode=mode)
+    assert a_started.is_set() and b_started.is_set()
+
+
+def test_interface_rejects_empty_input_and_unmounted_or_repeated_steps() -> None:
+    sdk = Capability("sdk")
+    step = Step(lambda: None)
+    with pytest.raises(GraphError, match="at least one"):
+        CapabilityInterface(inputs={sdk: ()})
+    with pytest.raises(GraphError, match="duplicate steps"):
+        CapabilityInterface(inputs={sdk: (step, step)})
+    with pytest.raises(GraphError, match="outside this graph"):
+        Graph(capabilities=CapabilityInterface(inputs={sdk: step}))
+    child = Graph(steps=(step,))
+    with pytest.raises(GraphError, match="mounted more than once"):
+        Graph(
+            steps=(child.step(), child.step()),
+            capabilities=CapabilityInterface(inputs={sdk: step}),
+        )
 
 
 def _require_event(event: Event, message: str) -> None:
@@ -44,25 +154,17 @@ def _component(
             for index, step in enumerate(steps)
         ),
         label=label,
-        capability_inputs=(
-            ()
-            if capability_input is None
-            else (
-                CapabilityInput(
-                    capability=capability_input[0],
-                    needed_by=capability_input[1],
-                ),
-            )
-        ),
-        capability_outputs=(
-            ()
-            if capability_output is None
-            else (
-                CapabilityOutput(
-                    capability=capability_output[0],
-                    ready_after=capability_output[1],
-                ),
-            )
+        capabilities=CapabilityInterface(
+            inputs=dict(
+                ()
+                if capability_input is None
+                else ((capability_input[0], capability_input[1]),)
+            ),
+            outputs=dict(
+                ()
+                if capability_output is None
+                else ((capability_output[0], capability_output[1]),)
+            ),
         ),
     )
     return graph.step(label=label)
@@ -105,7 +207,7 @@ def test_capability_binding_unlocks_only_the_consumer_input() -> None:
     )
     bindings = resolve_capability_requirements(
         (provider, consumer),
-        (AnyProviderRequirement(consumer=consumer, input=_input_of(consumer)),),
+        (AnyProviderRequirement(consumer=consumer, capability=_input_of(consumer)),),
     )
     graph = Graph(
         label="capability",
@@ -150,7 +252,7 @@ def test_exact_provider_requirement_selects_the_named_provider() -> None:
                 ExactProviderRequirement(
                     consumer=consumer,
                     provider=provider_a,
-                    input=_input_of(consumer),
+                    capability=_input_of(consumer),
                 ),
             ),
         )[0].source
@@ -200,11 +302,11 @@ def test_capability_port_can_explicitly_export_descendant_step() -> None:
     needs = Step(lambda: None, label="needs")
     provider_graph = Graph.from_wiring(
         wiring=(Graph.from_wiring(wiring=(ready.wire(),)).step().wire(),),
-        capability_outputs=(CapabilityOutput(capability, ready),),
+        capabilities=CapabilityInterface(outputs={capability: ready}),
     )
     consumer_graph = Graph.from_wiring(
         wiring=(Graph.from_wiring(wiring=(needs.wire(),)).step().wire(),),
-        capability_inputs=(CapabilityInput(capability, needs),),
+        capabilities=CapabilityInterface(inputs={capability: needs}),
     )
     provider = provider_graph.step(label="A")
     consumer = consumer_graph.step(label="B")
@@ -214,7 +316,7 @@ def test_capability_port_can_explicitly_export_descendant_step() -> None:
             ExactProviderRequirement(
                 consumer,
                 provider,
-                consumer_graph.capability_inputs[0],
+                capability,
             ),
         ),
     )
@@ -247,7 +349,7 @@ def test_any_provider_requirement_uses_explicit_selection_when_ambiguous() -> No
     )
     requirement = AnyProviderRequirement(
         consumer=consumer,
-        input=_input_of(consumer),
+        capability=_input_of(consumer),
     )
 
     with pytest.raises(GraphError, match="provider is ambiguous"):
@@ -289,7 +391,11 @@ def test_capability_binding_uses_unified_execution_path() -> None:
         steps=(provider, consumer),
         edges=resolve_capability_requirements(
             (provider, consumer),
-            (AnyProviderRequirement(consumer=consumer, input=_input_of(consumer)),),
+            (
+                AnyProviderRequirement(
+                    consumer=consumer, capability=_input_of(consumer)
+                ),
+            ),
         ),
     )
 
