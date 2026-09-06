@@ -147,6 +147,8 @@ class AsyncGraphExecutor:
                 execution_host,
                 _run_leaf,
                 concurrency=concurrency,
+                native_actions=compilation._native_actions,
+                native_contexts=run.native_action_contexts(self.state),
             )
         except ValueError as exc:
             raise GraphError(str(exc)) from exc

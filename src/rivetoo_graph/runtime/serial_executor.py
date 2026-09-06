@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from ..results import StepRunContext
 
 
-def _invoke_serial_step_action(
+def _invoke_serial_python_action(
     action: LeafAction,
     run_ctx: StepRunContext,
     action_log: GraphActionLog,
@@ -96,7 +96,12 @@ class SerialGraphExecutor:
             run_leaf=lambda step: self._execute_compiled_step(run, step),
         )
         try:
-            run_serial_session(compilation._native_graph, execution_host)
+            run_serial_session(
+                compilation._native_graph,
+                execution_host,
+                compilation._native_actions,
+                run.native_action_contexts(self.state),
+            )
         except ValueError as exc:
             raise GraphError(str(exc)) from exc
         emit_graph_observation(
@@ -114,6 +119,8 @@ class SerialGraphExecutor:
     ) -> None:
         label_path = step.context.label_path
         self.state.record_step(step.id, label_path)
+        component_log_path = run.component_log_path_for(self.state, step)
+        action = step.action
         runtime_step = RuntimeStep(
             step=step,
             label_path=label_path,
@@ -121,15 +128,15 @@ class SerialGraphExecutor:
             ancestor_graph_scopes=step.context.ancestor_graph_scopes,
         )
         run_ctx = run.make_run_context(self.state, runtime_step)
-        value = _invoke_serial_step_action(
-            step.action,
+        value = _invoke_serial_python_action(
+            action,
             run_ctx,
             self.action_log,
         )
         nested_graph = as_graph_result(value)
         if nested_graph is not None:
             nested_component_log_path = (
-                self.state.get_component_log_path(step.id) or run_ctx.component_log_path
+                self.state.get_component_log_path(step.id) or component_log_path
             )
             self._execute_compilation(
                 compile_graph(

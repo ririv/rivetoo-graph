@@ -108,6 +108,8 @@ class ParallelGraphExecutor:
                 compilation._native_graph,
                 execution_host,
                 workers=workers,
+                native_actions=compilation._native_actions,
+                native_contexts=run.native_action_contexts(self.state),
             )
         except ValueError as exc:
             raise GraphError(str(exc)) from exc
@@ -133,6 +135,7 @@ class ParallelGraphExecutor:
         thread.name = step_thread_name(label_path)
         self.state.record_step(step.id, label_path)
         run_ctx: StepRunContext | None = None
+        component_log_path = run.component_log_path_for(self.state, step)
         try:
             action = step.action
             runtime_step = RuntimeStep(
@@ -184,12 +187,12 @@ class ParallelGraphExecutor:
             self.state.record_result(step.id, value)
             self.state.complete_step(step.id)
         except Exception:
-            if run_ctx is not None and run_ctx.component_log_path is not None:
+            if component_log_path is not None:
                 self.action_log.append(
-                    run_ctx.component_log_path,
-                    "===== PYTHON EXCEPTION =====\n"
+                    component_log_path,
+                    "===== ACTION EXCEPTION =====\n"
                     f"{traceback.format_exc()}"
-                    "===== END PYTHON EXCEPTION =====\n",
+                    "===== END ACTION EXCEPTION =====\n",
                 )
             raise
         finally:

@@ -18,6 +18,13 @@
 
 当前 workspace 包含：
 
+- `crates/action`
+  - 定义 Rust `NativeAction` trait 与稳定错误边界
+  - 提供不回调 Python 的进程 action
+  - 不依赖 PyO3、Tokio 或 Graph core
+- `crates/native-graph`
+  - 持有 `NativeStep`、graph-owned arcs 与完整 `NativeGraph`
+  - 原生 adapter 以整图为边界接入，不向 Python 暴露单个 action
 - `crates/core`
   - package 名为 `rivetoo-graph`
   - 只依赖 Rust 标准库
@@ -26,7 +33,8 @@
   - 私有 Python adapter
   - 独占 PyO3 依赖
   - 把 Python 声明对象批量转换成连续整数 ID
-  - 把条件 predicate、leaf action、观察事件和宿主停止控制接回 Python
+  - 把条件 predicate、Python action、观察事件和宿主停止控制接回 Python
+  - 把 Rust action 交给原生实现执行
 - `crates/tokio-runtime`
   - 私有实验 crate，不属于正式 API
   - 独占 Tokio 依赖，用于测量“Rust runtime 逐 action 回调 Python”的成本
@@ -81,21 +89,21 @@ Rust CompiledExecutionGraph
     │
     ▼
 Rust ExecutionSession
-    ├── start(max_actions) → 第一批 action / condition / event
-    └── advance(update, max_actions) → 下一批工作或完成
-    │
-    ▼
-Python action executor
-    ├── 串行调用
-    ├── ThreadPoolExecutor
-    └── asyncio task
+    ├── Python action → 批量返回 Python execution driver
+    │                   ├── 任意 Python callable
+    │                   ├── ThreadPoolExecutor
+    │                   └── asyncio task
+    └── NativeGraph 中的 Rust action → Rust worker 直接执行 NativeAction
+                        └── 完成进入 Rust completion queue
 ```
 
 Rust 不逐节点反向调用 Python。Python 只在有状态变化时通过 `start/advance` 与 session
 交换一批数据：
 
-- Rust 批量返回 ready action、待求值 predicate 和组合生命周期 event
-- Python 执行任意 callable，并把完成节点、predicate 结果和显式 skip 批量交回 Rust
+- Rust 只把 ready 的 Python action、待求值 predicate 和生命周期 event 批量返回 Python
+- `NativeGraph` 在声明编译时一次接入；内部 action handle 留在 Rust
+- driver 只把 Python action 的完成节点、predicate 结果和显式 skip 批量交回 Rust
+- 混合 driver 批量取走 Rust completion，再和 Python 完成节点一起推进同一 session
 - 没有 timer polling；没有工作时，线程或 asyncio executor 等待实际 action 完成
 
 声明期已知子图由 Rust 编译为 composite 与 leaf；子图边界不会被隐式删除。action 在
@@ -123,7 +131,9 @@ action，对比：
 
 该基准专门放大调度边界成本，不代表真实构建耗时比例；真实 action 较重时差距会被
 稀释。但它足以否决“为 Python callable 引入逐 action Tokio/PyO3 往返会更快”的假设。
-Tokio 仍保留为可重复实验，正式路径选择事件驱动批量协议。
+Tokio 仍保留为可重复实验，正式路径选择事件驱动的混合协议。Rust action 改变的是
+action 所有权，不会推翻这一结论：Python 只挂载完整 `NativeGraph`，原生 leaf 的 action
+调用不经过 Python；混合 driver 只在批次边界接收完成事件并推进统一 session。
 
 ## 唯一事实来源
 
@@ -188,7 +198,9 @@ requirement 与 selection 映射成连续整数 ID。provider 索引、任意 pr
 当前仍留在 Python 的内容都是宿主边界，而不是另一套执行图算法：
 
 - 静态条件叶子和运行时条件 predicate 是 Python callable
-- action、结果对象、observe、日志路径和展示 label 是 Python 对象
+- Python action、结果对象、observe、日志路径和展示 label 是 Python 对象
+- Rust action 是 `NativeGraph` 内部的独立和类型分支；当前成功结果固定为 `None`，不会
+  携带任意 Python 对象，也不作为单个 Python API 暴露
 - PyO3 adapter 在一次编译调用中遍历声明对象；静态 predicate 的业务求值仍调用 Python
 - Python `GraphCompilation` 只恢复 action、predicate、observe、label path 与结果作用域侧表
 - `GraphExecutionState` 保存可供 Python action 动态写入的 skip、结果与渲染快照

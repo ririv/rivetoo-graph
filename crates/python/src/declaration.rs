@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use action::NativeActionHandle;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -10,6 +11,8 @@ use rivetoo_graph::{
 };
 
 use crate::NativeCompiledExecutionGraph;
+use crate::mixed_execution::NativeActionBindings;
+use crate::native_graph::NativeGraph;
 
 struct PythonTypes<'py> {
     graph: Bound<'py, PyAny>,
@@ -46,12 +49,17 @@ struct GraphRecord {
 }
 
 struct NodeRecord {
-    source_step: Py<PyAny>,
-    action: Py<PyAny>,
+    source_step: Option<Py<PyAny>>,
+    action: NodeAction,
     graph: usize,
     child_graph: Option<usize>,
     step_id: Vec<usize>,
     label: String,
+}
+
+enum NodeAction {
+    Python(Py<PyAny>),
+    Native(NativeActionHandle),
 }
 
 struct ConditionRecord {
@@ -124,15 +132,27 @@ impl<'py> Collector<'py> {
             .iter()
             .map(|condition| condition.index())
             .collect();
+        let native_actions = NativeActionBindings::new(
+            compilation
+                .declaration_nodes()
+                .iter()
+                .map(|node| match &self.nodes[node.index()].action {
+                    NodeAction::Python(_) => None,
+                    NodeAction::Native(action) => Some(action.clone()),
+                })
+                .collect(),
+        );
+        let graph = NativeCompiledExecutionGraph {
+            graph: Arc::new(compilation.into_graph()),
+        };
         Ok(NativeDeclarationCompilation {
-            graph: NativeCompiledExecutionGraph {
-                graph: Arc::new(compilation.into_graph()),
-            },
+            graph,
             declaration_nodes,
             declaration_conditions,
             graphs: self.graphs,
             nodes: self.nodes,
             conditions: self.conditions,
+            native_actions,
         })
     }
 
@@ -189,8 +209,8 @@ impl<'py> Collector<'py> {
             let active = parent_active && self.static_node_active(source_graph, &when)?;
             let action = step.getattr("action")?;
             self.nodes.push(NodeRecord {
-                source_step: step.clone().unbind(),
-                action: action.clone().unbind(),
+                source_step: Some(step.clone().unbind()),
+                action: NodeAction::Python(action.clone().unbind()),
                 graph: graph_index,
                 child_graph: None,
                 step_id: step_id.clone(),
@@ -211,30 +231,122 @@ impl<'py> Collector<'py> {
                 activation,
             ));
 
-            if action.is_instance(&self.types.graph)? {
-                let mut child_label_path = self.graphs[graph_index].label_path.clone();
-                child_label_path.push(step_label.clone());
-                let child_graph = self.collect_graph(
-                    &action,
-                    &step_label,
-                    child_label_path,
-                    Some(node_index),
-                    &step_id,
-                    active,
-                )?;
-                self.nodes[node_index].child_graph = Some(child_graph);
-                self.replace_node_kind(
-                    node_index,
-                    DeclaredNodeKind::Composite {
-                        child_graph: GraphId::new(child_graph),
-                    },
-                );
-            }
+            self.collect_nested_action(
+                &action,
+                graph_index,
+                node_index,
+                &step_id,
+                &step_label,
+                active,
+            )?;
         }
 
         self.collect_node_conditions(source_graph, graph_index, parent_active)?;
         self.collect_edges(source_graph, graph_index, parent_active)?;
         Ok(graph_index)
+    }
+
+    fn collect_nested_action(
+        &mut self,
+        action: &Bound<'py, PyAny>,
+        graph_index: usize,
+        node_index: usize,
+        step_id: &[usize],
+        step_label: &str,
+        active: bool,
+    ) -> PyResult<()> {
+        let mut child_label_path = self.graphs[graph_index].label_path.clone();
+        child_label_path.push(step_label.to_owned());
+        let child_graph = if action.is_instance(&self.types.graph)? {
+            Some(self.collect_graph(
+                action,
+                step_label,
+                child_label_path,
+                Some(node_index),
+                step_id,
+                active,
+            )?)
+        } else if let Ok(native_graph) = action.extract::<PyRef<'_, NativeGraph>>() {
+            Some(self.collect_native_graph(
+                action,
+                native_graph.graph(),
+                child_label_path,
+                Some(node_index),
+                step_id,
+                active,
+            ))
+        } else {
+            None
+        };
+        let Some(child_graph) = child_graph else {
+            return Ok(());
+        };
+        self.nodes[node_index].child_graph = Some(child_graph);
+        self.replace_node_kind(
+            node_index,
+            DeclaredNodeKind::Composite {
+                child_graph: GraphId::new(child_graph),
+            },
+        );
+        Ok(())
+    }
+
+    fn collect_native_graph(
+        &mut self,
+        source_graph: &Bound<'py, PyAny>,
+        native_graph: &native_graph::NativeGraph,
+        label_path: Vec<String>,
+        owner: Option<usize>,
+        id_prefix: &[usize],
+        parent_active: bool,
+    ) -> usize {
+        let graph_index = self.graphs.len();
+        self.graphs.push(GraphRecord {
+            source_graph: source_graph.clone().unbind(),
+            label: native_graph.label().to_owned(),
+            label_path,
+            owner,
+            local_steps: HashMap::new(),
+            local_step_order: Vec::with_capacity(native_graph.steps().len()),
+        });
+        let first_node = self.nodes.len();
+        for (local_index, native_step) in native_graph.steps().iter().enumerate() {
+            let node_index = self.nodes.len();
+            let mut step_id = id_prefix.to_owned();
+            step_id.push(local_index);
+            self.graphs[graph_index].local_step_order.push(node_index);
+            self.nodes.push(NodeRecord {
+                source_step: None,
+                action: NodeAction::Native(native_step.action().clone()),
+                graph: graph_index,
+                child_graph: None,
+                step_id,
+                label: native_step.label().to_owned(),
+            });
+            let activation = if parent_active {
+                NodeActivation::Active {
+                    prerequisites: Vec::new(),
+                    when: None,
+                }
+            } else {
+                NodeActivation::Inactive
+            };
+            self.activations.push(activation.clone());
+            self.declaration_nodes.push(DeclarationNode::new(
+                GraphId::new(graph_index),
+                DeclaredNodeKind::Leaf,
+                activation,
+            ));
+        }
+        if parent_active {
+            for arc in native_graph.arcs() {
+                self.push_node_prerequisite(
+                    first_node + arc.target.index(),
+                    DeclarationPrerequisite::Required(NodeId::new(first_node + arc.source.index())),
+                );
+            }
+        }
+        graph_index
     }
 
     fn static_node_active(
@@ -280,7 +392,10 @@ impl<'py> Collector<'py> {
             {
                 continue;
             }
-            let step = self.nodes[node_index].source_step.bind(self.py).clone();
+            let Some(source_step) = &self.nodes[node_index].source_step else {
+                continue;
+            };
+            let step = source_step.bind(self.py).clone();
             let when = step.getattr("when")?;
             if when.is_instance(&self.types.runtime_condition)? {
                 let condition = self.register_runtime_condition(&when, graph_index)?;
@@ -408,12 +523,13 @@ impl<'py> Collector<'py> {
             .nodes
             .iter()
             .enumerate()
-            .filter(|(_, node)| {
-                node.step_id.starts_with(prefix)
+            .filter_map(|(index, node)| {
+                let source_step = node.source_step.as_ref()?;
+                (node.step_id.starts_with(prefix)
                     && node.step_id.len() > prefix.len()
-                    && object_key(node.source_step.bind(self.py)) == object_key(step)
+                    && object_key(source_step.bind(self.py)) == object_key(step))
+                .then_some(index)
             })
-            .map(|(index, _)| index)
             .collect::<Vec<_>>();
         match matches.as_slice() {
             [node] => Ok(*node),
@@ -514,6 +630,7 @@ pub(crate) struct NativeDeclarationCompilation {
     graphs: Vec<GraphRecord>,
     nodes: Vec<NodeRecord>,
     conditions: Vec<ConditionRecord>,
+    native_actions: NativeActionBindings,
 }
 
 #[pymethods]
@@ -547,18 +664,25 @@ impl NativeDeclarationCompilation {
         self.nodes.iter().map(|node| node.child_graph).collect()
     }
 
-    fn source_steps(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
+    fn source_steps(&self, py: Python<'_>) -> Vec<Option<Py<PyAny>>> {
         self.nodes
             .iter()
-            .map(|node| node.source_step.clone_ref(py))
+            .map(|node| node.source_step.as_ref().map(|step| step.clone_ref(py)))
             .collect()
     }
 
-    fn actions(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
+    fn actions(&self, py: Python<'_>) -> Vec<Option<Py<PyAny>>> {
         self.nodes
             .iter()
-            .map(|node| node.action.clone_ref(py))
+            .map(|node| match &node.action {
+                NodeAction::Python(action) => Some(action.clone_ref(py)),
+                NodeAction::Native(_) => None,
+            })
             .collect()
+    }
+
+    fn native_actions(&self) -> NativeActionBindings {
+        self.native_actions.clone()
     }
 
     fn graph_labels(&self) -> Vec<String> {

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..compile import CompiledStep, GraphCompilation
+from ..compile import CompiledLeaf, CompiledNativeStep, CompiledStep, GraphCompilation
 from ..errors import GraphError
 from ..results import GraphScope, StepControl, StepReadContext, StepRunContext
 
@@ -78,7 +78,7 @@ class CompiledGraphRun:
         return self.compilation.source_graph
 
     @property
-    def steps(self) -> tuple[CompiledStep, ...]:
+    def steps(self) -> tuple[CompiledLeaf, ...]:
         return self.compilation.steps
 
     @property
@@ -92,12 +92,7 @@ class CompiledGraphRun:
     ) -> StepRunContext:
         step = runtime_step.step
         context = step.context
-        component_log_path = self.component_log_path
-        for composite_id in context.ancestor_composite_ids:
-            bound_path = state.get_component_log_path(composite_id)
-            if bound_path is not None:
-                component_log_path = bound_path
-                break
+        component_log_path = self.component_log_path_for(state, step)
         return StepRunContext(
             view=StepReadContext(
                 step_id=step.id,
@@ -112,6 +107,41 @@ class CompiledGraphRun:
             ),
             component_log_path=component_log_path,
         )
+
+    def component_log_path_for(
+        self,
+        state: GraphExecutionState,
+        step: CompiledStep | CompiledNativeStep,
+    ) -> Path | None:
+        """Resolve one step's inherited component log path without creating a run context."""
+
+        context = step.context
+        component_log_path = self.component_log_path
+        for composite_id in context.ancestor_composite_ids:
+            bound_path = state.get_component_log_path(composite_id)
+            if bound_path is not None:
+                component_log_path = bound_path
+                break
+        return component_log_path
+
+    def native_action_contexts(
+        self,
+        state: GraphExecutionState,
+    ) -> list[tuple[int, str | None]]:
+        """Project native leaf log contexts without exposing their actions."""
+
+        contexts: list[tuple[int, str | None]] = []
+        for node, compiled_node in enumerate(self.compilation._native_nodes):
+            if not isinstance(compiled_node, CompiledNativeStep):
+                continue
+            component_log_path = self.component_log_path_for(state, compiled_node)
+            contexts.append(
+                (
+                    node,
+                    None if component_log_path is None else str(component_log_path),
+                )
+            )
+        return contexts
 
     def child_graph_scope(
         self,

@@ -1,3 +1,4 @@
+from ._native import NativeGraph
 from .capability import (
     AnyProviderRequirement,
     CapabilitiesInput,
@@ -13,6 +14,7 @@ from .compile import (
     CompiledComposite,
     CompiledCompositeRef,
     CompiledConditionalDependency,
+    CompiledNativeStep,
     CompiledRuntimeCondition,
     CompiledStep,
     CompiledStepRef,
@@ -129,9 +131,11 @@ __all__ = [
     "StepWiring",
     "LeafAction",
     "LeafActionCallable",
+    "NativeGraph",
     "StepId",
     "StepLabelPath",
     "CompiledStep",
+    "CompiledNativeStep",
     "CompiledStepRef",
     "CompiledComposite",
     "CompiledCompositeRef",

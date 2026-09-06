@@ -8,9 +8,9 @@ from ..compile import (
     CompiledComposite,
     CompiledCompositeRef,
     CompiledConditionalDependency,
+    CompiledLeaf,
     CompiledPrerequisite,
     CompiledRuntimeCondition,
-    CompiledStep,
     CompiledStepRef,
     GraphCompilation,
     compile_graph,
@@ -46,7 +46,7 @@ def ensure_compilation(
 
 
 def render_step_label(
-    step: Step | CompiledStep,
+    step: Step | CompiledLeaf,
     *,
     step_id: StepId | None = None,
 ) -> str:
@@ -57,13 +57,13 @@ def render_step_label(
     return step.context.label_path[-1]
 
 
-def render_compiled_step_label(step: CompiledStep, path: tuple[str, ...]) -> str:
+def render_compiled_step_label(step: CompiledLeaf, path: tuple[str, ...]) -> str:
     del step
     return render_step_path(path)
 
 
 def render_when_suffix(
-    step: Step | CompiledStep | CompiledComposite,
+    step: Step | CompiledLeaf | CompiledComposite,
 ) -> str:
     when = step.when
     if when is None:
@@ -72,7 +72,7 @@ def render_when_suffix(
 
 
 def render_after_suffix(
-    step: CompiledStep | CompiledComposite,
+    step: CompiledLeaf | CompiledComposite,
     *,
     step_labels: Mapping[StepId, str] | None = None,
 ) -> str:

@@ -9,9 +9,10 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from .._native import (
+        NativeActionBindings,
         NativeCompiledExecutionGraph,
-        NativeExecutionBatch,
-        NativeExecutionSession,
+        NativeMixedExecutionBatch,
+        NativeMixedExecutionSession,
     )
 
 
@@ -38,42 +39,59 @@ class BatchExecutionHost(Protocol):
 class _DispatchBatch:
     actions: tuple[int, ...]
     finished: bool
+    native_running: int
 
 
 def _resolve_batch_conditions(
-    session: NativeExecutionSession,
+    session: NativeMixedExecutionSession,
     host: BatchExecutionHost,
-    batch: NativeExecutionBatch,
+    batch: NativeMixedExecutionBatch,
     *,
-    max_actions: int,
+    capacity: int,
+    occupied_python: int = 0,
 ) -> _DispatchBatch:
     actions: list[int] = []
     while True:
-        batch_actions, conditions, events, finished = batch.parts()
+        batch_actions, conditions, events, finished, native_running = batch.parts()
         host.apply_events(events)
         actions.extend(batch_actions)
         if not conditions:
             return _DispatchBatch(
                 actions=tuple(actions),
                 finished=finished,
+                native_running=native_running,
             )
         resolutions = host.resolve_conditions(conditions)
+        available = capacity - occupied_python - len(actions) - native_running
         batch = session.advance(
             [],
             resolutions,
             host.skipped_nodes(),
-            max_actions - len(actions),
+            available,
         )
 
 
 def run_serial_session(
     graph: NativeCompiledExecutionGraph,
     host: BatchExecutionHost,
+    native_actions: NativeActionBindings,
+    native_contexts: list[tuple[int, str | None]],
 ) -> None:
-    session = graph.session(host.skipped_nodes())
-    batch = _resolve_batch_conditions(session, host, session.start(1), max_actions=1)
+    session = graph.mixed_session(
+        host.skipped_nodes(), native_actions, native_contexts, 1
+    )
+    batch = _resolve_batch_conditions(session, host, session.start(1), capacity=1)
     while not batch.finished:
         host.require_running()
+        if not batch.actions and batch.native_running:
+            session.wait_native()
+            batch = _resolve_batch_conditions(
+                session,
+                host,
+                session.advance([], [], host.skipped_nodes(), 0),
+                capacity=1,
+            )
+            continue
         if not batch.actions:
             raise RuntimeError("running graph session returned no serial action")
         node = batch.actions[0]
@@ -82,7 +100,7 @@ def run_serial_session(
             session,
             host,
             session.advance([node], [], host.skipped_nodes(), 1),
-            max_actions=1,
+            capacity=1,
         )
 
 
@@ -91,17 +109,22 @@ def run_threaded_session(
     host: BatchExecutionHost,
     *,
     workers: int,
+    native_actions: NativeActionBindings,
+    native_contexts: list[tuple[int, str | None]],
 ) -> None:
     if workers < 1:
         raise ValueError("graph workers must be >= 1")
-    session = graph.session(host.skipped_nodes())
+    session = graph.mixed_session(
+        host.skipped_nodes(), native_actions, native_contexts, workers
+    )
     running: dict[Future[None], int] = {}
+    native_waiter: Future[None] | None = None
     failure: BaseException | None = None
     batch = _resolve_batch_conditions(
         session,
         host,
         session.start(workers),
-        max_actions=workers,
+        capacity=workers,
     )
     with ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="GraphWorker"
@@ -111,15 +134,26 @@ def run_threaded_session(
                 for node in batch.actions:
                     running[pool.submit(host.run_leaf, node)] = node
 
-            if batch.finished and not running:
+            if batch.native_running and native_waiter is None:
+                native_waiter = pool.submit(session.wait_native)
+
+            if batch.finished and not running and native_waiter is None:
                 break
-            if not running:
+            waits = set(running)
+            if native_waiter is not None:
+                waits.add(native_waiter)
+            if not waits:
                 host.require_running()
                 raise RuntimeError("running graph session returned no threaded action")
 
-            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            done, _ = wait(waits, return_when=FIRST_COMPLETED)
             completed: list[int] = []
             for future in done:
+                waiter = native_waiter
+                if waiter is not None and future is waiter:
+                    waiter.result()
+                    native_waiter = None
+                    continue
                 node = running.pop(future)
                 try:
                     future.result()
@@ -131,11 +165,11 @@ def run_threaded_session(
                     completed.append(node)
 
             if failure is not None:
-                if running:
+                if running or native_waiter is not None:
                     continue
                 raise failure
 
-            available = workers - len(running)
+            available = workers - len(running) - batch.native_running
             batch = _resolve_batch_conditions(
                 session,
                 host,
@@ -145,7 +179,8 @@ def run_threaded_session(
                     host.skipped_nodes(),
                     available,
                 ),
-                max_actions=available,
+                capacity=workers,
+                occupied_python=len(running),
             )
     host.require_running()
 
@@ -156,35 +191,51 @@ async def run_async_session(
     run_leaf: Callable[[int], Awaitable[None]],
     *,
     concurrency: int,
+    native_actions: NativeActionBindings,
+    native_contexts: list[tuple[int, str | None]],
 ) -> None:
     if concurrency < 1:
         raise ValueError("graph concurrency must be >= 1")
-    session = graph.session(host.skipped_nodes())
+    session = graph.mixed_session(
+        host.skipped_nodes(), native_actions, native_contexts, concurrency
+    )
     running: dict[asyncio.Future[None], int] = {}
+    native_waiter: asyncio.Task[None] | None = None
     failure: BaseException | None = None
     batch = _resolve_batch_conditions(
         session,
         host,
         session.start(concurrency),
-        max_actions=concurrency,
+        capacity=concurrency,
     )
     while True:
         if failure is None and not host.stop_requested():
             for node in batch.actions:
                 running[asyncio.ensure_future(run_leaf(node))] = node
 
-        if batch.finished and not running:
+        if batch.native_running and native_waiter is None:
+            native_waiter = asyncio.create_task(asyncio.to_thread(session.wait_native))
+
+        if batch.finished and not running and native_waiter is None:
             break
-        if not running:
+        waits = set(running)
+        if native_waiter is not None:
+            waits.add(native_waiter)
+        if not waits:
             host.require_running()
             raise RuntimeError("running graph session returned no async action")
 
         done, _ = await asyncio.wait(
-            running,
+            waits,
             return_when=asyncio.FIRST_COMPLETED,
         )
         completed: list[int] = []
         for task in done:
+            waiter = native_waiter
+            if waiter is not None and task is waiter:
+                waiter.result()
+                native_waiter = None
+                continue
             node = running.pop(task)
             try:
                 task.result()
@@ -196,11 +247,11 @@ async def run_async_session(
                 completed.append(node)
 
         if failure is not None:
-            if running:
+            if running or native_waiter is not None:
                 continue
             raise failure
 
-        available = concurrency - len(running)
+        available = concurrency - len(running) - batch.native_running
         batch = _resolve_batch_conditions(
             session,
             host,
@@ -210,6 +261,7 @@ async def run_async_session(
                 host.skipped_nodes(),
                 available,
             ),
-            max_actions=available,
+            capacity=concurrency,
+            occupied_python=len(running),
         )
     host.require_running()

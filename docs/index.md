@@ -31,6 +31,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - [核心模型](./core_model.md)
 - [拓扑复杂度与实现开销](./topology_complexity.md)
 - [执行语义](./execution.md)
+- [Python 图与 Rust 原生图](./native-graphs.md)
 - [条件边](./conditional_edges.md)
 - [条件 Step](./conditional_steps.md)
 - [能力依赖与子图端口](./capabilities.md)
@@ -44,7 +45,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - `GraphPlan`
   - 声明图与一次执行作用域
 - `Step`
-  - 可选展示 label、条件和 action
+  - 可选展示 label、条件，以及 Python action 或完整 Rust 原生子图
 - `Graph.edges`
   - 显式接线关系
 - `RuntimeCondition.reads`

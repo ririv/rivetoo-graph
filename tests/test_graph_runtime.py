@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from collections.abc import Iterator
@@ -38,6 +39,7 @@ from rivetoo_graph import (
     render_live_graph_execution,
     runtime_condition,
 )
+from rivetoo_graph._native import NativeGraph, _native_process_graph
 from rivetoo_graph.compile import compile_graph
 from rivetoo_graph.runtime.compiled import CompiledExecutionHost
 
@@ -52,6 +54,22 @@ class _ConditionEvaluator(StaticConditionEvaluator):
 
 def _condition(name: str) -> StaticCondition:
     return StaticCondition(payload=name, description=name)
+
+
+def _process_graph(
+    *,
+    label: str,
+    program: str,
+    arguments: list[str],
+    cwd: Path,
+) -> NativeGraph:
+    """Build a native process graph through the private adapter test boundary."""
+
+    return _native_process_graph(
+        label,
+        [(label, program, arguments, str(cwd), dict(os.environ))],
+        [],
+    )
 
 
 def test_compiled_host_forwards_only_new_skip_requests() -> None:
@@ -125,6 +143,97 @@ def test_graph_plan_rejects_pre_stopped_execution_control() -> None:
         plan.run()
 
     assert calls == []
+
+
+def test_graph_plan_executes_python_and_native_actions_in_one_graph(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "mixed.txt"
+    prepare = Step(lambda: output.write_text("python\n"), label="prepare")
+    native = Step(
+        _process_graph(
+            label="native-process",
+            program="/bin/sh",
+            arguments=["-c", f"printf 'rust\\n' >> {output}"],
+            cwd=tmp_path,
+        ),
+        label="native",
+    )
+    verify = Step(
+        lambda: output.read_text().splitlines(),
+        label="verify",
+    )
+    plan = GraphPlan(
+        label="mixed",
+        graph=(prepare >> native >> verify).graph(),
+        execution_state=GraphExecutionState(results=GraphResultStore()),
+    )
+
+    state = plan.run(ThreadGraphRunOptions(workers=2))
+
+    assert plan.require_result(verify).value == ["python", "rust"]
+    assert state.completed_steps == frozenset(
+        {StepId((0,)), StepId((1,)), StepId((1, 0)), StepId((2,))}
+    )
+
+
+def test_native_action_writes_to_bound_component_log(tmp_path: Path) -> None:
+    log_path = tmp_path / "component.log"
+    native = Step(
+        _process_graph(
+            label="native-process",
+            program="/bin/sh",
+            arguments=[
+                "-c",
+                "printf 'native stdout\\n'; printf 'native stderr\\n' >&2",
+            ],
+            cwd=tmp_path,
+        ),
+        label="native",
+    )
+    component = Graph(label="component", steps=(native,)).step()
+    plan = GraphPlan(label="native-log", graph=Graph(steps=(component,)))
+    plan.bind_component_log_path(component, log_path)
+
+    plan.run()
+
+    assert log_path.read_text().splitlines() == ["native stdout", "native stderr"]
+
+
+def test_native_action_failure_is_a_graph_action_failure() -> None:
+    native = Step(
+        _process_graph(
+            label="native-process",
+            program="/bin/sh",
+            arguments=["-c", "exit 7"],
+            cwd=Path("/"),
+        ),
+        label="native",
+    )
+
+    with pytest.raises(RuntimeError, match="exited with status exit status: 7"):
+        GraphPlan(label="native-failure", graph=Graph(steps=(native,))).run()
+
+
+def test_async_graph_executor_runs_native_action_without_blocking_model_changes(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "async-native.txt"
+    native = Step(
+        _process_graph(
+            label="native-process",
+            program="/bin/sh",
+            arguments=["-c", f"printf async > {output}"],
+            cwd=tmp_path,
+        ),
+        label="native",
+    )
+
+    GraphPlan(label="async-native", graph=Graph(steps=(native,))).run(
+        AsyncGraphRunOptions(concurrency=1)
+    )
+
+    assert output.read_text() == "async"
 
 
 def test_graph_plan_run_executes_nested_graphs_in_topological_order() -> None:

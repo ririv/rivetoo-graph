@@ -2,7 +2,10 @@
 
 mod declaration;
 mod experiment;
+mod mixed_execution;
+mod native_graph;
 
+use action::NativeActionExecutor;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rivetoo_graph::{
@@ -24,11 +27,11 @@ struct NativeCompiledExecutionGraph {
 }
 
 #[pyclass(frozen, module = "rivetoo_graph._native")]
-struct NativeExecutionBatch {
-    actions: Vec<usize>,
-    conditions: Vec<(usize, usize)>,
-    events: Vec<(u8, usize, Option<bool>)>,
-    finished: bool,
+pub(crate) struct NativeExecutionBatch {
+    pub(crate) actions: Vec<usize>,
+    pub(crate) conditions: Vec<(usize, usize)>,
+    pub(crate) events: Vec<(u8, usize, Option<bool>)>,
+    pub(crate) finished: bool,
 }
 
 impl From<ExecutionBatch> for NativeExecutionBatch {
@@ -104,7 +107,7 @@ impl NativeExecutionSession {
     }
 }
 
-fn encode_event(event: &ExecutionEvent) -> (u8, usize, Option<bool>) {
+pub(crate) fn encode_event(event: &ExecutionEvent) -> (u8, usize, Option<bool>) {
     match *event {
         ExecutionEvent::ConditionEvaluated { node, value } => (0, node.index(), Some(value)),
         ExecutionEvent::ConditionSkipped(node) => (1, node.index(), None),
@@ -351,6 +354,30 @@ impl NativeCompiledExecutionGraph {
             .map_err(|error| PyValueError::new_err(error.to_string()))?,
         })
     }
+
+    fn mixed_session(
+        &self,
+        initially_skipped: Vec<usize>,
+        native_actions: &mixed_execution::NativeActionBindings,
+        native_contexts: Vec<(usize, Option<String>)>,
+        workers: usize,
+    ) -> PyResult<mixed_execution::NativeMixedExecutionSession> {
+        let executor = NativeActionExecutor::new(workers)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let bindings = mixed_execution::NativeMixedExecutionSession::bindings(
+            self.graph.nodes().len(),
+            native_actions,
+            native_contexts,
+        )?;
+        let session = ExecutionSession::new(
+            Arc::clone(&self.graph),
+            initially_skipped.into_iter().map(NodeId::new),
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(mixed_execution::NativeMixedExecutionSession::new(
+            session, executor, bindings,
+        ))
+    }
 }
 
 fn node_indexes(nodes: &[NodeId]) -> Vec<usize> {
@@ -365,9 +392,17 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(resolve_capability_bindings, module)?)?;
     module.add_function(wrap_pyfunction!(declaration::compile_declaration, module)?)?;
     module.add_function(wrap_pyfunction!(experiment::run_tokio_callbacks, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        native_graph::native_process_graph,
+        module
+    )?)?;
     module.add_class::<NativeCompiledExecutionGraph>()?;
     module.add_class::<declaration::NativeDeclarationCompilation>()?;
     module.add_class::<NativeExecutionBatch>()?;
     module.add_class::<NativeExecutionSession>()?;
+    module.add_class::<mixed_execution::NativeActionBindings>()?;
+    module.add_class::<mixed_execution::NativeMixedExecutionBatch>()?;
+    module.add_class::<mixed_execution::NativeMixedExecutionSession>()?;
+    module.add_class::<native_graph::NativeGraph>()?;
     Ok(())
 }

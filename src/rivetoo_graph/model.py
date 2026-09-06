@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypeGuard
 
-from ._native import dag_cycle
+from ._native import NativeGraph, dag_cycle
 from .capability import CapabilitiesInput, CapabilityBinding, CapabilityInterface
 from .errors import GraphError
 from .static_condition import StaticCondition, StaticConditionEval
@@ -157,7 +157,8 @@ class LeafAction:
                 return fn(run_ctx)
 
 
-type StepAction = LeafAction | Graph
+# Python 只持有原生子图的整体边界，不暴露其中的 Rust action。
+type StepAction = LeafAction | Graph | NativeGraph
 type StepActionInput = StepAction | LeafActionCallable
 type ConditionalEdgePredicate = Callable[["StepReadContext"], bool]
 
@@ -303,7 +304,7 @@ class Step:
             raise GraphError("step label must not be empty")
 
         normalized_action: StepAction
-        if isinstance(action, (LeafAction, Graph)):
+        if isinstance(action, (LeafAction, Graph, NativeGraph)):
             normalized_action = action
         elif callable(action):
             normalized_action = LeafAction(fn=action)
@@ -345,6 +346,8 @@ def step(action: StepActionInput) -> Step:
             label = action.label
         case LeafAction():
             label = _callable_step_label(action.fn)
+        case NativeGraph():
+            label = action.label
         case _:
             label = _callable_step_label(action)
     return Step(label=label, action=action)

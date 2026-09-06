@@ -5,12 +5,14 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, cast
 
 from ._native import (
+    NativeActionBindings,
     NativeCompiledExecutionGraph,
     NativeDeclarationCompilation,
+    NativeGraph,
     compile_declaration,
 )
 from .errors import GraphError
-from .model import StepId
+from .model import Graph, GraphObservationMessages, StepId
 from .results import GraphScope
 
 if TYPE_CHECKING:
@@ -18,8 +20,6 @@ if TYPE_CHECKING:
 
     from .model import (
         ConditionalEdgePredicate,
-        Graph,
-        GraphObservationMessages,
         LeafAction,
         Step,
         StepLabelPath,
@@ -100,10 +100,25 @@ class CompiledStepContext:
 
 @dataclass(frozen=True, slots=True)
 class CompiledStep:
-    """完全扁平化后会被执行器提交给 worker 的叶子节点。"""
+    """由 Python 执行器调用的 Python 叶子节点。"""
 
     ref: CompiledStepRef
     action: LeafAction
+    after: tuple[CompiledPrerequisite, ...]
+    when: CompiledRuntimeCondition | None
+    owner: CompiledCompositeRef | None
+    context: CompiledStepContext
+
+    @property
+    def id(self) -> StepId:
+        return self.ref.id
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledNativeStep:
+    """由 Rust 执行器直接调用的原生叶子节点。"""
+
+    ref: CompiledStepRef
     after: tuple[CompiledPrerequisite, ...]
     when: CompiledRuntimeCondition | None
     owner: CompiledCompositeRef | None
@@ -124,7 +139,7 @@ class CompiledComposite:
     """
 
     ref: CompiledCompositeRef
-    source_graph: Graph
+    source_graph: Graph | NativeGraph
     graph_label: str
     children: tuple[CompiledNodeRef, ...]
     after: tuple[CompiledPrerequisite, ...]
@@ -143,7 +158,8 @@ class CompiledComposite:
         return self.context.label_path
 
 
-type CompiledNode = CompiledStep | CompiledComposite
+type CompiledLeaf = CompiledStep | CompiledNativeStep
+type CompiledNode = CompiledLeaf | CompiledComposite
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +174,7 @@ class _PrecompiledExecutionGraph:
     graph: NativeCompiledExecutionGraph
     conditions: tuple[CompiledRuntimeCondition, ...]
     nodes: tuple[CompiledNode, ...]
+    native_actions: NativeActionBindings
 
 
 type _ExecutionGraphInput = _MaterializeExecutionGraph | _PrecompiledExecutionGraph
@@ -175,7 +192,7 @@ class GraphCompilation:
 
     source_graph: Graph
     label: str
-    steps: tuple[CompiledStep, ...]
+    steps: tuple[CompiledLeaf, ...]
     composites: tuple[CompiledComposite, ...]
     roots: tuple[CompiledNodeRef, ...]
     root_label_path: StepLabelPath = ()
@@ -203,6 +220,11 @@ class GraphCompilation:
         compare=False,
     )
     _native_conditions: tuple[CompiledRuntimeCondition, ...] = field(
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _native_actions: NativeActionBindings = field(
         init=False,
         repr=False,
         compare=False,
@@ -319,7 +341,11 @@ class GraphCompilation:
             object.__setattr__(
                 self,
                 "steps",
-                tuple(node for node in native_nodes if isinstance(node, CompiledStep)),
+                tuple(
+                    node
+                    for node in native_nodes
+                    if not isinstance(node, CompiledComposite)
+                ),
             )
             object.__setattr__(
                 self,
@@ -349,6 +375,7 @@ class GraphCompilation:
             nodes=native_nodes,
             node_indexes=native_node_indexes,
             conditions=native_conditions,
+            native_actions=NativeActionBindings(len(native_nodes)),
         )
 
     def _initialize_precompiled_execution_graph(
@@ -377,6 +404,7 @@ class GraphCompilation:
             nodes=precompiled.nodes,
             node_indexes=native_node_indexes,
             conditions=precompiled.conditions,
+            native_actions=precompiled.native_actions,
         )
 
     def _set_native_execution_graph(
@@ -386,12 +414,14 @@ class GraphCompilation:
         nodes: tuple[CompiledNode, ...],
         node_indexes: dict[StepId, int],
         conditions: tuple[CompiledRuntimeCondition, ...],
+        native_actions: NativeActionBindings,
     ) -> None:
         """Commit the complete native execution view as one internal state transition."""
 
         object.__setattr__(self, "_native_graph", graph)
         object.__setattr__(self, "_native_nodes", nodes)
         object.__setattr__(self, "_native_conditions", conditions)
+        object.__setattr__(self, "_native_actions", native_actions)
         object.__setattr__(
             self,
             "_native_node_indexes",
@@ -425,7 +455,7 @@ def _require_compiled_node(
     node = nodes.get(ref.id)
     if node is None:
         raise GraphError(f"compiled graph references unknown node: {ref.id}")
-    if isinstance(ref, CompiledStepRef) != isinstance(node, CompiledStep):
+    if isinstance(ref, CompiledStepRef) != (not isinstance(node, CompiledComposite)):
         raise GraphError(f"compiled graph reference kind does not match node: {ref.id}")
     return node
 
@@ -591,13 +621,16 @@ def _materialize_native_compilation(
     labels = native.node_labels()
     node_graphs = native.node_graphs()
     child_graphs = native.node_child_graphs()
-    source_steps = tuple(cast("Step", value) for value in native.source_steps())
+    source_steps = tuple(
+        None if value is None else cast("Step", value)
+        for value in native.source_steps()
+    )
     actions = native.actions()
     graph_labels = native.graph_labels()
     graph_label_paths = tuple(tuple(value) for value in native.graph_label_paths())
     graph_owners = native.graph_owners()
     graph_local_nodes = native.graph_local_nodes()
-    source_graphs = tuple(cast("Graph", value) for value in native.source_graphs())
+    source_graphs = tuple(native.source_graphs())
 
     refs_by_declaration: dict[int, CompiledNodeRef] = {}
     for declaration in active_declarations:
@@ -611,9 +644,10 @@ def _materialize_native_compilation(
     graph_step_ids = tuple(
         MappingProxyType(
             {
-                source_steps[declaration]: step_ids[declaration]
+                cast("Step", source_steps[declaration]): step_ids[declaration]
                 for declaration in local_nodes
                 if declaration in declaration_to_compiled
+                and source_steps[declaration] is not None
             }
         )
         for local_nodes in graph_local_nodes
@@ -660,7 +694,7 @@ def _materialize_native_compilation(
             condition=compiled_conditions[condition],
         )
 
-    steps: list[CompiledStep] = []
+    steps: list[CompiledLeaf] = []
     composites: list[CompiledComposite] = []
     ordered_nodes: list[CompiledNode] = []
     for compiled_index, declaration in enumerate(active_declarations):
@@ -685,20 +719,35 @@ def _materialize_native_compilation(
         ref = refs_by_declaration[declaration]
         child_graph = child_graphs[declaration]
         if child_graph is None:
-            compiled_step = CompiledStep(
-                ref=cast("CompiledStepRef", ref),
-                action=cast("LeafAction", actions[declaration]),
-                after=after,
-                when=when,
-                owner=owner,
-                context=context,
-            )
+            action = actions[declaration]
+            compiled_step: CompiledLeaf
+            if action is None:
+                compiled_step = CompiledNativeStep(
+                    ref=cast("CompiledStepRef", ref),
+                    after=after,
+                    when=when,
+                    owner=owner,
+                    context=context,
+                )
+            else:
+                compiled_step = CompiledStep(
+                    ref=cast("CompiledStepRef", ref),
+                    action=cast("LeafAction", action),
+                    after=after,
+                    when=when,
+                    owner=owner,
+                    context=context,
+                )
             steps.append(compiled_step)
             ordered_nodes.append(compiled_step)
             continue
+        component_source_graph = cast(
+            "Graph | NativeGraph",
+            source_graphs[child_graph],
+        )
         composite = CompiledComposite(
             ref=_require_composite_ref(ref),
-            source_graph=source_graphs[child_graph],
+            source_graph=component_source_graph,
             graph_label=graph_labels[child_graph],
             children=tuple(
                 refs_by_declaration[child]
@@ -708,7 +757,11 @@ def _materialize_native_compilation(
             after=after,
             when=when,
             owner=owner,
-            observation=source_graphs[child_graph].observation,
+            observation=(
+                component_source_graph.observation
+                if isinstance(component_source_graph, Graph)
+                else GraphObservationMessages()
+            ),
             context=context,
             graph_step_ids=graph_step_ids[child_graph],
         )
@@ -731,6 +784,7 @@ def _materialize_native_compilation(
             graph=native.graph,
             conditions=compiled_conditions,
             nodes=tuple(ordered_nodes),
+            native_actions=native.native_actions(),
         ),
     )
 

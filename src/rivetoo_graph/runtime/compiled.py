@@ -3,8 +3,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ..compile import CompiledComposite, CompiledStep, GraphCompilation
+from ..compile import (
+    CompiledComposite,
+    CompiledNativeStep,
+    CompiledStep,
+    GraphCompilation,
+)
 from ..errors import GraphError
+from ..model import Graph
 from ..observe import GraphObservationEvent, GraphObservationPhase
 from ..results import StepReadContext
 
@@ -81,6 +87,13 @@ class CompiledExecutionHost:
                 case 4:
                     step_id = self.compilation._native_node(node).id
                     self.state.record_skipped_step(step_id)
+                case 5:
+                    step = self._require_native_step(node)
+                    self.state.record_step(step.id, step.context.label_path)
+                case 6:
+                    step = self._require_native_step(node)
+                    self.state.record_result(step.id, None)
+                    self.state.complete_step(step.id)
                 case _:
                     raise GraphError(f"unknown native execution event: {kind}")
 
@@ -179,6 +192,14 @@ class CompiledExecutionHost:
             )
         return compiled_node
 
+    def _require_native_step(self, node: int) -> CompiledNativeStep:
+        compiled_node = self.compilation._native_node(node)
+        if not isinstance(compiled_node, CompiledNativeStep):
+            raise GraphError(
+                f"native action lifecycle references non-native node: {compiled_node.id}"
+            )
+        return compiled_node
+
 
 def _emit_composite_observation(
     composite: CompiledComposite,
@@ -196,6 +217,8 @@ def _emit_composite_observation(
     )
     if message is None:
         return
+    if not isinstance(composite.source_graph, Graph):
+        raise GraphError("native graph must not declare Python observation messages")
     observer.emit(
         GraphObservationEvent(
             phase=phase,

@@ -156,7 +156,8 @@ action 日志端口。需要日志或执行视图时，宿主必须显式传入�
    - 不等待自己的 prerequisite
    - 不进入子图 action
 5. 声明期子图由 Rust 编译为 composite；运行期返回图重新进入同一编译器
-6. `ExecutionSession` 批量派发叶子，并用 `CompiledStep.context` 恢复声明作用域
+6. `ExecutionSession` 按 action 所有权分发叶子；Python action 批量返回 Python driver，
+   `NativeGraph` 中的 Rust action 直接提交 Rust worker
 7. composite 只在协调线程维护生命周期，不提交给 worker，不写入 `executed_steps`
 8. 条件边保留为 `CompiledConditionalDependency`，不生成伪造的 gate step
 9. `GraphExecutionState` 可显式 skip 某个 step path
@@ -255,9 +256,11 @@ Rust compiler 会转换所有声明期已知子图：
 当前 Graph runtime 通过运行选项联合类型控制执行后端与并发度：
 
 - `ThreadGraphRunOptions(workers=...)`
-  - 同步 step 直接执行，异步 step 通过 `asyncio.run(...)` 桥接
+  - 同步 Python step 直接执行，异步 Python step 通过 `asyncio.run(...)` 桥接
+  - Rust action 由 Rust session 直接派发，并与 Python action 共享同一总并发预算
 - `AsyncGraphRunOptions(concurrency=...)`
   - 异步 step 直接 await，同步 step 通过 `asyncio.to_thread(...)` 桥接
+  - Rust action 同样通过受控 worker 执行，不阻塞 asyncio event loop
   - 同步和异步 action 的 component log 都通过 `ContextVar` 保持任务级隔离
 
 并发语义当前保持保守：
