@@ -23,6 +23,7 @@ from .runtime import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from .model import Graph, GraphMode, Step, StepId
@@ -73,32 +74,59 @@ class GraphPlan:
     def bind_component_log_path(self, step: Step, path: Path) -> None:
         """把一次挂载中的 component step 绑定到独立日志文件。"""
 
-        step_id = self._require_unique_mounted_step_id(step)
-        self.execution_state.set_component_log_path(step_id, path)
+        self.bind_component_log_paths({step: path})
 
-    def _require_unique_mounted_step_id(self, step: Step) -> StepId:
-        from .model import Graph, step_ids_for_mount
+    def bind_component_log_paths(self, bindings: Mapping[Step, Path]) -> None:
+        """一次解析挂载身份并绑定一组 component 日志路径。"""
 
-        matches: list[StepId] = []
+        if not bindings:
+            return
+        mounted_step_ids = self._index_mounted_step_ids()
+        for step, path in bindings.items():
+            step_id = self._require_unique_mounted_step_id(
+                step,
+                mounted_step_ids=mounted_step_ids,
+            )
+            self.execution_state.set_component_log_path(step_id, path)
 
-        def _collect(graph: Graph, parent_step_id: StepId | None) -> None:
-            for candidate, candidate_id in step_ids_for_mount(
-                graph,
-                parent_step_id=parent_step_id,
-            ).items():
-                if candidate is step:
-                    matches.append(candidate_id)
-                if isinstance(candidate.action, Graph):
-                    _collect(candidate.action, candidate_id)
-
-        _collect(self.graph, None)
+    def _require_unique_mounted_step_id(
+        self,
+        step: Step,
+        *,
+        mounted_step_ids: Mapping[Step, tuple[StepId, ...]] | None = None,
+    ) -> StepId:
+        if mounted_step_ids is None:
+            mounted_step_ids = self._index_mounted_step_ids()
+        matches = mounted_step_ids.get(step)
         if not matches:
             raise RuntimeError(f"step '{step.label}' is not mounted in graph plan")
         if len(matches) > 1:
             raise RuntimeError(
                 f"step '{step.label}' is mounted more than once in graph plan"
             )
-        return matches[0]
+        return next(iter(matches))
+
+    def _index_mounted_step_ids(self) -> dict[Step, tuple[StepId, ...]]:
+        from .model import Graph, step_ids_for_mount
+
+        mounted_step_ids: dict[Step, list[StepId]] = {}
+
+        def _collect(graph: Graph, parent_step_id: StepId | None) -> None:
+            for candidate, candidate_id in step_ids_for_mount(
+                graph,
+                parent_step_id=parent_step_id,
+            ).items():
+                mounted_step_ids.setdefault(candidate, []).append(candidate_id)
+                if isinstance(candidate.action, Graph):
+                    _collect(candidate.action, candidate_id)
+
+        # V 为静态挂载中的 step 出现次数。一次批量绑定以 O(V) 时间和空间建立索引，
+        # 随后的 K 次查找均为 O(1)，总复杂度为 O(V + K)，避免退化为 O(K * V)。
+        _collect(self.graph, None)
+        return {
+            candidate: tuple(step_ids)
+            for candidate, step_ids in mounted_step_ids.items()
+        }
 
     def _write_execution_output(
         self,

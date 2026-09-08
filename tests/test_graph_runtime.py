@@ -200,6 +200,24 @@ def test_native_action_writes_to_bound_component_log(tmp_path: Path) -> None:
     assert log_path.read_text().splitlines() == ["native stdout", "native stderr"]
 
 
+def test_bind_component_log_paths_resolves_one_batch(tmp_path: Path) -> None:
+    first = Step(lambda: None, label="first")
+    second = Step(lambda: None, label="second")
+    plan = GraphPlan(label="logs", graph=Graph(steps=(first, second)))
+    first_log = tmp_path / "first.log"
+    second_log = tmp_path / "second.log"
+
+    plan.bind_component_log_paths(
+        {
+            first: first_log,
+            second: second_log,
+        }
+    )
+
+    assert plan.execution_state.get_component_log_path(StepId((0,))) == first_log
+    assert plan.execution_state.get_component_log_path(StepId((1,))) == second_log
+
+
 def test_native_action_failure_is_a_graph_action_failure() -> None:
     native = Step(
         _process_graph(

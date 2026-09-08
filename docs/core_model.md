@@ -418,7 +418,9 @@ ParentGraphStepRef(
 - `skip_step(step_id)`
 - `skip_steps(step_ids)`
 
-component log 在执行前通过 `GraphPlan.bind_component_log_path(step, path)` 绑定。
+component log 在执行前通过 `GraphPlan.bind_component_log_path(step, path)` 绑定；需要绑定
+多个 component 时使用 `bind_component_log_paths(...)`，它只建立一次静态挂载索引，避免
+为每个 component 重复遍历整张图。
 静态子图和 action 动态返回的子图都会继承所属 component 的日志路径；action 不提供
 运行时覆盖入口。
 
