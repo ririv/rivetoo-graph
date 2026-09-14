@@ -89,6 +89,13 @@ if TYPE_CHECKING:
         SerialGraphExecutor,
         ThreadGraphRunOptions,
     )
+    from .selection import (
+        MultipleStaticBranchesSelectedError,
+        NoStaticBranchSelectedError,
+        StaticBranch,
+        StaticSelectionError,
+        select_one,
+    )
     from .static_condition import (
         StaticCondition,
         StaticConditionEval,
@@ -209,6 +216,16 @@ _EXPORT_GROUPS = (
         ),
     ),
     (
+        ".selection",
+        (
+            "StaticBranch",
+            "StaticSelectionError",
+            "NoStaticBranchSelectedError",
+            "MultipleStaticBranchesSelectedError",
+            "select_one",
+        ),
+    ),
+    (
         ".static_condition",
         (
             "StaticCondition",
@@ -299,6 +316,11 @@ __all__ = [
     "NO_GRAPH_ACTION_LOG",
     "ThreadGraphRunOptions",
     "AsyncGraphRunOptions",
+    "StaticBranch",
+    "StaticSelectionError",
+    "NoStaticBranchSelectedError",
+    "MultipleStaticBranchesSelectedError",
+    "select_one",
     "GraphResultStore",
     "GraphScope",
     "ParentGraphStepRef",

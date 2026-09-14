@@ -11,6 +11,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - 纯有向拓扑与 DAG 校验
 - Step、Graph 和声明期接线
 - `>>` 串行与 `|` 并列组合
+- 构图前要求恰好一个结果的静态选择
 - 静态条件、运行时条件和条件边
 - 子图边界与能力端口
 - 统一 Rust 编译执行路径，以及 dynamic / compiled 两种展示模式

@@ -209,6 +209,35 @@ child_step = child_graph.step(
 
 `Graph.step()` 与 DSL 的自动包装使用同一套 Graph→Step 语义。
 
+## 构图前静态选择
+
+`select_one()` 在 Graph 组装前从已求值的分支中要求恰好一个结果。它返回分支持有的
+原始值，不包装 Step，不创建子图，也不进入 Graph 拓扑：
+
+```python
+compiler: Step = select_one(
+    StaticBranch(active=use_clang, value=compile_with_clang),
+    StaticBranch(active=use_gcc, value=compile_with_gcc),
+)
+
+graph = (prepare >> compiler >> install).graph()
+```
+
+没有 active 分支或同时存在多个 active 分支都会失败。条件必须由宿主在调用前求值成
+`bool`；`select_one()` 不接收 `StaticCondition`，也不读取隐式请求上下文。
+
+如果候选值的创建需要延迟，应先选择构造函数，再只调用选中的函数：
+
+```python
+selected_graph = select_one(
+    StaticBranch(active=is_android, value=android_graph),
+    StaticBranch(active=is_ios, value=ios_graph),
+)()
+```
+
+这与 `Step.when` 的语义不同：`Step.when` 是执行图中一个节点的静态存在条件；
+`select_one()` 是进入 Graph 之前的严格构图选择。
+
 ## `LeafAction`
 
 `LeafAction` 只接受两种 callable：
