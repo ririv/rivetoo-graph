@@ -146,7 +146,7 @@ PYTHONPATH=src ../.venv/bin/python benchmarks/recipe_scale.py \
 `PYTHONPATH` 指向其 worktree，同时仍执行主线中的脚本：
 
 ```bash
-PYTHONPATH=/Volumes/ssd/Proj/infinity/rivetoo/work/rivetoo-graph-python/src \
+PYTHONPATH=../work/rivetoo-graph-python/src \
   ../.venv/bin/python benchmarks/recipe_scale.py \
   --implementation pure-python \
   --recipes 2000 \
