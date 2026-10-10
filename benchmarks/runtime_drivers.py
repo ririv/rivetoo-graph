@@ -62,6 +62,8 @@ def main() -> None:
             compilation._native_graph,
             _host(compilation),
             workers=args.workers,
+            native_actions=compilation._native_actions,
+            native_contexts=[],
         ),
         args.repeats,
     )

@@ -44,15 +44,16 @@ impl CallbackHost for PythonCallbackHost {
             self.host
                 .bind(py)
                 .call_method1("resolve_conditions", (encoded,))?
-                .extract::<Vec<(usize, bool)>>()
+                .extract::<Vec<(usize, Option<bool>)>>()
                 .map(|resolutions| {
                     resolutions
                         .into_iter()
                         .map(|(condition, value)| {
-                            ConditionResolution::new(
-                                rivetoo_graph::ConditionId::new(condition),
-                                value,
-                            )
+                            let condition = rivetoo_graph::ConditionId::new(condition);
+                            match value {
+                                Some(value) => ConditionResolution::new(condition, value),
+                                None => ConditionResolution::failed(condition),
+                            }
                         })
                         .collect()
                 })
@@ -87,7 +88,8 @@ impl CallbackHost for PythonCallbackHost {
     }
 
     fn require_running(&self) -> PyResult<()> {
-        self.call_unit("require_running")
+        self.call_unit("require_running")?;
+        self.call_unit("raise_failures")
     }
 }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -14,6 +15,13 @@ if TYPE_CHECKING:
 
 def _is_same_or_descendant(step_id: StepId, ancestor: StepId) -> bool:
     return step_id.segments[: len(ancestor.segments)] == ancestor.segments
+
+
+class GraphNodeFailure(StrEnum):
+    """区分自身失败和因前置失败而未执行的节点。"""
+
+    FAILED = "failed"
+    BLOCKED = "blocked"
 
 
 @dataclass(slots=True, init=False)
@@ -36,6 +44,7 @@ class GraphExecutionState:
     results: GraphResultStore | None
     _component_log_paths: dict[StepId, Path]
     _runtime_condition_values: dict[StepId, bool]
+    _node_failures: dict[StepId, GraphNodeFailure]
     _lock: threading.Lock
     _started: bool
 
@@ -56,6 +65,7 @@ class GraphExecutionState:
         self.results = results
         self._component_log_paths = {}
         self._runtime_condition_values = {}
+        self._node_failures = {}
         self._lock = threading.Lock()
         self._started = False
 
@@ -84,6 +94,11 @@ class GraphExecutionState:
         with self._lock:
             return frozenset(self._completed_composites)
 
+    @property
+    def node_failures(self) -> dict[StepId, GraphNodeFailure]:
+        with self._lock:
+            return dict(self._node_failures)
+
     def begin_run(self) -> None:
         """声明本状态开始服务一次执行，并拒绝后续复用。"""
 
@@ -105,6 +120,7 @@ class GraphExecutionState:
                 step_label_paths=dict(self._step_label_paths),
                 results=None if self.results is None else self.results.copy(),
                 runtime_condition_values=dict(self._runtime_condition_values),
+                node_failures=dict(self._node_failures),
             )
 
     def request_skip(self, step_id: StepId) -> None:
@@ -159,6 +175,7 @@ class GraphExecutionState:
 
     def record_skipped_step(self, step_id: StepId) -> None:
         with self._lock:
+            self._require_not_failed(step_id)
             if step_id in self._step_label_paths or step_id in self._completed_steps:
                 raise RuntimeError(f"cannot skip an already executed step: {step_id}")
             self._skipped_steps.add(step_id)
@@ -167,6 +184,7 @@ class GraphExecutionState:
         """记录 step 已开始执行及其实际挂载路径。"""
 
         with self._lock:
+            self._require_not_failed(step_id)
             if step_id in self._skipped_steps:
                 raise RuntimeError(f"cannot execute a skipped step: {step_id}")
             existing_path = self._step_label_paths.get(step_id)
@@ -183,6 +201,7 @@ class GraphExecutionState:
         """记录 step 的 action 或完整子图已经成功完成。"""
 
         with self._lock:
+            self._require_not_failed(step_id)
             if step_id not in self._step_label_paths:
                 raise RuntimeError(
                     f"cannot complete a step that was not started: {step_id}"
@@ -195,6 +214,7 @@ class GraphExecutionState:
         """记录非执行组合边界已经激活。"""
 
         with self._lock:
+            self._require_not_failed(step_id)
             if step_id in self._skipped_steps:
                 raise RuntimeError(f"cannot enter a skipped composite: {step_id}")
             if step_id in self._entered_composites:
@@ -202,9 +222,10 @@ class GraphExecutionState:
             self._entered_composites.add(step_id)
 
     def complete_composite(self, step_id: StepId) -> None:
-        """记录组合边界的全部直接子节点已经进入终态。"""
+        """记录组合边界成功完成；失败子图不会进入此状态。"""
 
         with self._lock:
+            self._require_not_failed(step_id)
             if step_id not in self._entered_composites:
                 raise RuntimeError(
                     f"cannot complete a composite that was not entered: {step_id}"
@@ -212,6 +233,31 @@ class GraphExecutionState:
             if step_id in self._completed_composites:
                 raise RuntimeError(f"composite was completed more than once: {step_id}")
             self._completed_composites.add(step_id)
+
+    def _require_not_failed(self, step_id: StepId) -> None:
+        if step_id in self._node_failures:
+            raise RuntimeError(f"node already failed or blocked: {step_id}")
+
+    def record_failed_step(self, step_id: StepId) -> None:
+        self._record_node_failure(step_id, GraphNodeFailure.FAILED)
+
+    def record_blocked_step(self, step_id: StepId) -> None:
+        self._record_node_failure(step_id, GraphNodeFailure.BLOCKED)
+
+    def _record_node_failure(self, step_id: StepId, failure: GraphNodeFailure) -> None:
+        with self._lock:
+            self._require_not_failed(step_id)
+            if (
+                step_id in self._completed_steps
+                or step_id in self._completed_composites
+                or step_id in self._skipped_steps
+            ):
+                raise RuntimeError(f"node already reached a terminal state: {step_id}")
+            if failure is GraphNodeFailure.BLOCKED and (
+                step_id in self._step_label_paths or step_id in self._entered_composites
+            ):
+                raise RuntimeError(f"cannot block an already started node: {step_id}")
+            self._node_failures[step_id] = failure
 
     def record_result(self, step_id: StepId, value: object | None) -> None:
         with self._lock:
@@ -254,3 +300,4 @@ class GraphExecutionSnapshot:
     step_label_paths: dict[StepId, StepLabelPath]
     results: GraphResultStore | None
     runtime_condition_values: dict[StepId, bool]
+    node_failures: dict[StepId, GraphNodeFailure]

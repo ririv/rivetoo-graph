@@ -13,6 +13,7 @@ from ..errors import GraphError
 from ..model import Graph
 from ..observe import GraphObservationEvent, GraphObservationPhase
 from ..results import StepReadContext
+from .control import GraphExecutionStopped
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -50,6 +51,7 @@ class CompiledExecutionHost:
             node.id: index for index, node in enumerate(self.compilation._native_nodes)
         }
         self._forwarded_skip_step_ids: set[StepId] = set()
+        self._failures: list[Exception] = []
 
     def skipped_nodes(self) -> list[int]:
         nodes: list[int] = []
@@ -65,11 +67,31 @@ class CompiledExecutionHost:
     def resolve_conditions(
         self,
         requests: list[tuple[int, int]],
-    ) -> list[tuple[int, bool]]:
-        return [
-            (condition, self.evaluate_condition(node, condition))
-            for node, condition in requests
-        ]
+    ) -> list[tuple[int, bool | None]]:
+        resolutions: list[tuple[int, bool | None]] = []
+        for node, condition in requests:
+            try:
+                value = self.evaluate_condition(node, condition)
+            except GraphExecutionStopped:
+                raise
+            except Exception as error:
+                self.record_failure(node, error)
+                resolutions.append((condition, None))
+            else:
+                resolutions.append((condition, value))
+        return resolutions
+
+    def record_failure(self, node: int, error: Exception) -> None:
+        path = "/".join(self.compilation._native_node(node).context.label_path)
+        error.add_note(f"Graph node: {path}")
+        logger.error("Graph node failed: %s: %s", path, error)
+        self._failures.append(error)
+
+    def raise_failures(self) -> None:
+        if len(self._failures) == 1:
+            raise self._failures[0]
+        if self._failures:
+            raise ExceptionGroup("Graph execution failed", self._failures)
 
     def apply_events(self, events: list[tuple[int, int, bool | None]]) -> None:
         for kind, node, value in events:
@@ -94,6 +116,14 @@ class CompiledExecutionHost:
                     step = self._require_native_step(node)
                     self.state.record_result(step.id, None)
                     self.state.complete_step(step.id)
+                case 7:
+                    self.state.record_failed_step(
+                        self.compilation._native_node(node).id
+                    )
+                case 8:
+                    self.state.record_blocked_step(
+                        self.compilation._native_node(node).id
+                    )
                 case _:
                     raise GraphError(f"unknown native execution event: {kind}")
 

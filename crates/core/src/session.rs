@@ -15,11 +15,20 @@ pub enum NodeState {
     Active,
     Finished,
     Skipped,
+    Failed,
+    Blocked,
 }
 
 impl NodeState {
     const fn is_terminal(self) -> bool {
-        matches!(self, Self::Finished | Self::Skipped)
+        matches!(
+            self,
+            Self::Finished | Self::Skipped | Self::Failed | Self::Blocked
+        )
+    }
+
+    const fn is_failure(self) -> bool {
+        matches!(self, Self::Failed | Self::Blocked)
     }
 }
 
@@ -46,13 +55,24 @@ impl ConditionRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConditionResolution {
     condition: ConditionId,
-    value: bool,
+    value: Result<bool, ()>,
 }
 
 impl ConditionResolution {
     #[must_use]
     pub const fn new(condition: ConditionId, value: bool) -> Self {
-        Self { condition, value }
+        Self {
+            condition,
+            value: Ok(value),
+        }
+    }
+
+    #[must_use]
+    pub const fn failed(condition: ConditionId) -> Self {
+        Self {
+            condition,
+            value: Err(()),
+        }
     }
 }
 
@@ -64,6 +84,8 @@ pub enum ExecutionEvent {
     CompositeEntered(NodeId),
     CompositeCompleted(NodeId),
     NodeSkipped(NodeId),
+    NodeFailed(NodeId),
+    NodeBlocked(NodeId),
 }
 
 /// Whether a returned batch leaves more work or completes the session.
@@ -71,6 +93,7 @@ pub enum ExecutionEvent {
 pub enum SessionStatus {
     Running,
     Finished,
+    Failed,
 }
 
 /// One event-driven exchange between the Rust session and an action executor.
@@ -107,7 +130,7 @@ impl ExecutionBatch {
 /// A batch of host outcomes applied atomically before the next ready batch is derived.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExecutionUpdate {
-    completed: Vec<NodeId>,
+    completed: Vec<(NodeId, Result<(), ()>)>,
     conditions: Vec<ConditionResolution>,
     skipped: Vec<NodeId>,
 }
@@ -115,7 +138,7 @@ pub struct ExecutionUpdate {
 impl ExecutionUpdate {
     #[must_use]
     pub fn new(
-        completed: impl IntoIterator<Item = NodeId>,
+        completed: impl IntoIterator<Item = (NodeId, Result<(), ()>)>,
         conditions: impl IntoIterator<Item = ConditionResolution>,
         skipped: impl IntoIterator<Item = NodeId>,
     ) -> Self {
@@ -196,13 +219,14 @@ pub struct ExecutionSession {
     ready: VecDeque<NodeId>,
     evaluation_queue: VecDeque<NodeId>,
     queued: Vec<bool>,
-    condition_values: Vec<Option<bool>>,
+    condition_values: Vec<Option<Result<bool, ()>>>,
     condition_requested: Vec<bool>,
     condition_waiters: Vec<Vec<NodeId>>,
     explicit_skips: Vec<bool>,
     pending_conditions: Vec<ConditionRequest>,
     pending_events: Vec<ExecutionEvent>,
     started: bool,
+    remaining_children: Vec<usize>,
 }
 
 impl ExecutionSession {
@@ -222,7 +246,15 @@ impl ExecutionSession {
             };
             *slot = true;
         }
+        // owner 已在编译阶段校验；O(V) 建立计数，不复制每个子图的 children。
+        let mut remaining_children = vec![0; graph.nodes().len()];
+        for spec in graph.nodes() {
+            if let Some(owner) = spec.owner() {
+                remaining_children[owner.index()] += 1;
+            }
+        }
         Ok(Self {
+            remaining_children,
             states: vec![NodeState::Pending; graph.nodes().len()],
             ready: VecDeque::new(),
             evaluation_queue: VecDeque::new(),
@@ -292,7 +324,7 @@ impl ExecutionSession {
                 self.queue_evaluation(waiter);
             }
         }
-        for node in update.completed {
+        for (node, outcome) in update.completed {
             let Some(spec) = self.graph.nodes().get(node.index()) else {
                 return Err(SessionError::UnknownNode(node));
             };
@@ -302,7 +334,12 @@ impl ExecutionSession {
             if self.states[node.index()] != NodeState::Running {
                 return Err(SessionError::NodeNotRunning(node));
             }
-            self.states[node.index()] = NodeState::Finished;
+            self.states[node.index()] = if outcome.is_ok() {
+                NodeState::Finished
+            } else {
+                self.pending_events.push(ExecutionEvent::NodeFailed(node));
+                NodeState::Failed
+            };
             self.notify_terminal(node);
         }
         self.drive(max_actions)
@@ -358,10 +395,17 @@ impl ExecutionSession {
             actions,
             conditions,
             events,
-            status: if finished {
-                SessionStatus::Finished
-            } else {
+            status: if !finished {
                 SessionStatus::Running
+            } else if self
+                .graph
+                .roots()
+                .iter()
+                .any(|root| self.states[root.index()].is_failure())
+            {
+                SessionStatus::Failed
+            } else {
+                SessionStatus::Finished
             },
         })
     }
@@ -394,7 +438,11 @@ impl ExecutionSession {
         if let Some(condition) = node.when()
             && !explicitly_skipped
         {
-            let Some(value) = self.condition_value(node_id, condition) else {
+            let Some(outcome) = self.condition_value(node_id, condition) else {
+                return;
+            };
+            let Ok(value) = outcome else {
+                self.block_node(node_id);
                 return;
             };
             self.pending_events
@@ -408,11 +456,13 @@ impl ExecutionSession {
             }
         }
         for prerequisite in node.prerequisites() {
-            let Some(satisfied) = self.prerequisite_satisfied(node_id, *prerequisite) else {
-                return;
-            };
-            if !satisfied {
-                return;
+            match self.prerequisite_satisfied(node_id, *prerequisite) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(()) => {
+                    self.block_node(node_id);
+                    return;
+                }
             }
         }
         if explicitly_skipped {
@@ -432,17 +482,41 @@ impl ExecutionSession {
         &mut self,
         target: NodeId,
         prerequisite: Prerequisite,
-    ) -> Option<bool> {
+    ) -> Result<bool, ()> {
         match prerequisite {
-            Prerequisite::Required(node) => Some(self.is_terminal(node)),
-            Prerequisite::Conditional { node, condition } => self
-                .condition_value(target, condition)
-                .map(|active| !active || self.is_terminal(node)),
+            Prerequisite::Required(node) => self.prerequisite_ready(node),
+            Prerequisite::Conditional { node, condition } => {
+                match self.condition_value(target, condition) {
+                    Some(Ok(true)) => self.prerequisite_ready(node),
+                    Some(Ok(false)) => Ok(true),
+                    Some(Err(())) => Err(()),
+                    None => Ok(false),
+                }
+            }
         }
     }
 
-    fn condition_value(&mut self, node: NodeId, condition: ConditionId) -> Option<bool> {
+    fn prerequisite_ready(&self, node: NodeId) -> Result<bool, ()> {
+        if self.states[node.index()].is_failure() {
+            Err(())
+        } else {
+            Ok(self.is_terminal(node))
+        }
+    }
+
+    fn condition_value(
+        &mut self,
+        node: NodeId,
+        condition: ConditionId,
+    ) -> Option<Result<bool, ()>> {
         let spec = &self.graph.conditions()[condition.index()];
+        if spec
+            .reads()
+            .iter()
+            .any(|read| self.states[read.index()].is_failure())
+        {
+            return Some(Err(()));
+        }
         if spec.reads().iter().any(|read| !self.is_terminal(*read)) {
             return None;
         }
@@ -475,10 +549,38 @@ impl ExecutionSession {
     }
 
     fn complete_composite(&mut self, composite: NodeId) {
-        self.pending_events
-            .push(ExecutionEvent::CompositeCompleted(composite));
-        self.states[composite.index()] = NodeState::Finished;
+        let failed = self
+            .graph
+            .children(composite)
+            .unwrap()
+            .iter()
+            .any(|child| self.states[child.index()].is_failure());
+        if failed {
+            self.pending_events
+                .push(ExecutionEvent::NodeFailed(composite));
+            self.states[composite.index()] = NodeState::Failed;
+        } else {
+            self.pending_events
+                .push(ExecutionEvent::CompositeCompleted(composite));
+            self.states[composite.index()] = NodeState::Finished;
+        }
         self.notify_terminal(composite);
+    }
+
+    fn block_node(&mut self, node: NodeId) {
+        // 尚未激活的子图整体不可进入；每个后代只访问一次，不逐节点回溯祖先。
+        // 阻断本身为 O(V_blocked + E_out)，额外栈空间 O(V_blocked)。
+        let mut pending = vec![node];
+        while let Some(blocked) = pending.pop() {
+            pending.extend_from_slice(self.graph.children(blocked).unwrap());
+            self.states[blocked.index()] = NodeState::Blocked;
+            self.pending_events
+                .push(ExecutionEvent::NodeBlocked(blocked));
+            for dependent in self.graph.dependents(blocked).unwrap().to_vec() {
+                self.queue_evaluation(dependent);
+            }
+        }
+        self.notify_terminal(node);
     }
 
     fn skip_node(&mut self, node: NodeId, condition_skip: bool) {
@@ -522,14 +624,13 @@ impl ExecutionSession {
         let Some(owner) = self.graph.nodes()[node.index()].owner() else {
             return;
         };
-        let complete = self.states[owner.index()] == NodeState::Active
-            && self
-                .graph
-                .children(owner)
-                .unwrap()
-                .iter()
-                .all(|child| self.is_terminal(*child));
-        if complete {
+        if self.states[owner.index()] != NodeState::Active {
+            return;
+        }
+        // 每个直接子节点终态只计数一次：归并为 O(V)，避免每次完成扫描兄弟
+        // 导致宽子图 O(V²)。最后一次完成才扫描直接子节点的成功/失败状态。
+        self.remaining_children[owner.index()] -= 1;
+        if self.remaining_children[owner.index()] == 0 {
             self.complete_composite(owner);
         }
     }
@@ -554,7 +655,7 @@ impl ExecutionSession {
 mod tests {
     use std::sync::Arc;
 
-    use super::{ConditionResolution, ExecutionSession, ExecutionUpdate, SessionStatus};
+    use super::{ConditionResolution, ExecutionSession, ExecutionUpdate, NodeState, SessionStatus};
     use crate::execution::{
         CompiledExecutionGraph, ConditionId, ExecutionNode, Prerequisite, RuntimeCondition,
     };
@@ -562,6 +663,69 @@ mod tests {
 
     fn node(index: usize) -> NodeId {
         NodeId::new(index)
+    }
+
+    #[test]
+    fn failed_shared_condition_blocks_all_waiters_but_not_an_independent_node() {
+        let condition = ConditionId::new(0);
+        let graph = Arc::new(
+            CompiledExecutionGraph::new(
+                [
+                    ExecutionNode::leaf(None, [], Some(condition)),
+                    ExecutionNode::leaf(None, [], Some(condition)),
+                    ExecutionNode::leaf(None, [], None),
+                ],
+                [RuntimeCondition::new([])],
+            )
+            .unwrap(),
+        );
+        let mut session = ExecutionSession::new(graph, []).unwrap();
+        let first = session.start(1).unwrap();
+        assert_eq!(first.conditions().len(), 1);
+        assert_eq!(first.actions(), [node(2)]);
+        let last = session
+            .advance(
+                ExecutionUpdate::new(
+                    [(node(2), Ok(()))],
+                    [ConditionResolution::failed(condition)],
+                    [],
+                ),
+                1,
+            )
+            .unwrap();
+        assert_eq!(last.status(), SessionStatus::Failed);
+        assert_eq!(session.state(node(0)), Some(NodeState::Blocked));
+        assert_eq!(session.state(node(1)), Some(NodeState::Blocked));
+        assert_eq!(session.state(node(2)), Some(NodeState::Finished));
+    }
+
+    #[test]
+    fn failure_propagates_through_a_long_chain_without_dispatching_descendants() {
+        let count: usize = 10_000;
+        let graph = Arc::new(
+            CompiledExecutionGraph::new(
+                (0..count).map(|index| {
+                    ExecutionNode::leaf(
+                        None,
+                        index
+                            .checked_sub(1)
+                            .map(|previous| Prerequisite::Required(node(previous))),
+                        None,
+                    )
+                }),
+                [],
+            )
+            .unwrap(),
+        );
+        let mut session = ExecutionSession::new(graph, []).unwrap();
+        assert_eq!(session.start(8).unwrap().actions(), [node(0)]);
+        let last = session
+            .advance(ExecutionUpdate::new([(node(0), Err(()))], [], []), 8)
+            .unwrap();
+        assert_eq!(last.status(), SessionStatus::Failed);
+        assert!(last.actions().is_empty());
+        assert_eq!(session.state(node(0)), Some(NodeState::Failed));
+        assert_eq!(session.state(node(count - 1)), Some(NodeState::Blocked));
     }
 
     #[test]
@@ -580,11 +744,11 @@ mod tests {
         let first = session.start(8).unwrap();
         assert_eq!(first.actions(), [node(0)]);
         let second = session
-            .advance(ExecutionUpdate::new([node(0)], [], []), 8)
+            .advance(ExecutionUpdate::new([(node(0), Ok(()))], [], []), 8)
             .unwrap();
         assert_eq!(second.actions(), [node(1)]);
         let last = session
-            .advance(ExecutionUpdate::new([node(1)], [], []), 8)
+            .advance(ExecutionUpdate::new([(node(1), Ok(()))], [], []), 8)
             .unwrap();
         assert_eq!(last.status(), SessionStatus::Finished);
     }
@@ -605,7 +769,7 @@ mod tests {
         let first = session.start(8).unwrap();
         assert_eq!(first.actions(), [node(0)]);
         let condition = session
-            .advance(ExecutionUpdate::new([node(0)], [], []), 8)
+            .advance(ExecutionUpdate::new([(node(0), Ok(()))], [], []), 8)
             .unwrap();
         assert_eq!(condition.conditions().len(), 1);
         let skipped = session

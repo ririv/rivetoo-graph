@@ -104,9 +104,9 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
 
 ## 执行控制
 
-`GraphExecutionControl` 保存停止状态和停止处理器，不保存 step 结果。并行或异步
-runtime 捕获到首个失败时，会通过当前 control 请求停止；宿主可以注册资源停止
-处理器，在同一信号下回收仍在运行的子进程。
+`GraphExecutionControl` 保存停止状态和停止处理器，不保存 step 结果。普通 action 或
+运行时条件的异常不会请求全局停止；宿主主动取消、`GraphExecutionStopped` 或
+`KeyboardInterrupt` 等执行中断仍终止整图。宿主可以注册资源停止处理器，回收仍在运行的子进程。
 
 control 是一次性的执行作用域：一旦收到停止请求，就不会恢复，也不提供 `reset()`。
 运行前已经停止的 Plan 会直接抛出 `GraphExecutionStopped`；运行过程中收到停止请求
@@ -133,8 +133,41 @@ second_plan = GraphPlan(
 
 这仍然是两次顺序执行，而不是在一个 Plan 的 step 内嵌套启动另一个 Plan。两个
 Plan 各自持有独立的 `GraphExecutionState`；共享的只有请求停止与宿主资源回收信号。
-前一个 Plan 失败后，后一个 Plan 会在开始执行前看到停止状态，因此不会继续运行。
+显式停止后，后一个 Plan 会在开始执行前看到停止状态，因此不会继续运行。
+普通失败仍会从 `run()` 抛出异常；调用方若捕获异常后主动运行第二个 Plan，control 不会阻止它。
+两个 Plan 间需要成功依赖时，应组合成一张图或由调用方明确处理，不能用共享 control 代替依赖边。
 信号处理、子进程终止和多个 Plan 的请求级协调由宿主负责，不属于 Graph core。
+
+## 失败传播
+
+普通 Step 失败只阻断真正依赖它的后续节点，无关分支继续执行，最终整图仍报告失败：
+
+```text
+A（失败）→ B（blocked，不执行）
+C（成功）→ D（继续执行）
+```
+
+- Rust session 区分 `Finished`、`Skipped`、`Failed`、`Blocked`。失败不能伪装为成功或主动跳过。
+- 激活的条件依赖和 `RuntimeCondition.reads` 传播失败；未激活的条件边不传播失败。
+  条件函数自身抛错时，相关节点被阻断，不会读取缺失的 action 结果。
+- 已进入的子图让内部无关分支执行完，再汇总为失败；不会触发 `AFTER_SUCCESS`。
+  依赖整个子图的节点被阻断。尚未进入就被阻断的子图，其全部后代也标记为 `blocked`。
+- 能力端口遵循实际接线：出口步骤已成功，则该能力仍就绪，不因其子图内其他步骤失败而撤销。
+  如果出口失败，消费它的入口被阻断；消费者子图内不依赖该入口的准备工作仍可执行。
+- 动态 action 返回的子图使用相同规则；其失败最终使外层 action 失败。
+- Python action 与 Rust action 共享以上语义。Rust 批量回传失败状态和错误，不增加逐节点异常查询。
+
+包含多个出入口、出口提前就绪和整个子图依赖的对比，见
+[能力依赖：出入口遇到失败时](./capabilities.md#出入口遇到失败时)。
+
+调度结束后，单个错误沿现有异常链抛出并保留节点路径，多个错误用 Python `ExceptionGroup`
+一起报告；被阻断的节点不制造重复异常。执行快照的 `node_failures` 保存
+`GraphNodeFailure.FAILED | BLOCKED`，渲染区分这两个终态，不再显示为运行中。
+编译错误、调度协议错误、日志/观察设施错误不是可恢复的业务 action 失败，不承诺继续执行。
+
+失败不会回滚已成功工作，也不会自动重试。下游是否可以继续由图上的依赖关系决定，而不是异常名称。
+新增阻断传播沿现有邻接索引进行，不为每个错误重扫整图；阻断子树访问为
+`O(V_blocked + E_out)`。子图终态使用直接子节点计数，全部子图的汇总工作为 `O(V)`。
 
 ## 宿主运行设施边界
 
@@ -278,9 +311,9 @@ Rust compiler 会转换所有声明期已知子图：
   - Rust action 同样通过受控 worker 执行，不阻塞 asyncio event loop
   - 同步和异步 action 的 component log 都通过 `ContextVar` 保持任务级隔离
 
-并发语义当前保持保守：
+并发语义：
 
-- 失败即停止派发新的 ready step
+- 普通失败阻断相关下游，无关 ready step 继续派发
 - 已经在跑的 step 等自然结束
 - 异步后端不会取消已经创建并开始运行的 task
 - 运行期返回图通过嵌套 compilation/session 执行
@@ -294,7 +327,7 @@ Graph 已提供线程与异步两种受控调度后端，但仍保持以下边�
 
 - 并发上限由显式 run options 决定
 - 只调度拓扑上已经 ready 的节点
-- 失败后停止派发新节点
+- 显式取消后停止派发新节点；普通失败按依赖关系传播
 - 已经开始执行的同步 worker 或异步 task 不会被 Graph 强制取消
 - 运行期返回图的嵌套 session 暂不共享外层 session 的全局 ready 队列
 - action 对宿主共享状态的并发写入安全由宿主负责

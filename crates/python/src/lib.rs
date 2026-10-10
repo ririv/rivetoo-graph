@@ -44,7 +44,7 @@ impl From<ExecutionBatch> for NativeExecutionBatch {
                 .map(|request| (request.node().index(), request.condition().index()))
                 .collect(),
             events: batch.events().iter().map(encode_event).collect(),
-            finished: batch.status() == SessionStatus::Finished,
+            finished: batch.status() != SessionStatus::Running,
         }
     }
 }
@@ -86,18 +86,25 @@ impl NativeExecutionSession {
     #[pyo3(signature = (completed, conditions, skipped, max_actions))]
     fn advance(
         &mut self,
-        completed: Vec<usize>,
-        conditions: Vec<(usize, bool)>,
+        completed: Vec<(usize, bool)>,
+        conditions: Vec<(usize, Option<bool>)>,
         skipped: Vec<usize>,
         max_actions: usize,
     ) -> PyResult<NativeExecutionBatch> {
         self.session
             .advance(
                 ExecutionUpdate::new(
-                    completed.into_iter().map(NodeId::new),
-                    conditions.into_iter().map(|(condition, value)| {
-                        ConditionResolution::new(ConditionId::new(condition), value)
+                    completed.into_iter().map(|(node, success)| {
+                        (NodeId::new(node), if success { Ok(()) } else { Err(()) })
                     }),
+                    conditions
+                        .into_iter()
+                        .map(|(condition, value)| match value {
+                            Some(value) => {
+                                ConditionResolution::new(ConditionId::new(condition), value)
+                            }
+                            None => ConditionResolution::failed(ConditionId::new(condition)),
+                        }),
                     skipped.into_iter().map(NodeId::new),
                 ),
                 max_actions,
@@ -114,6 +121,8 @@ pub(crate) fn encode_event(event: &ExecutionEvent) -> (u8, usize, Option<bool>) 
         ExecutionEvent::CompositeEntered(node) => (2, node.index(), None),
         ExecutionEvent::CompositeCompleted(node) => (3, node.index(), None),
         ExecutionEvent::NodeSkipped(node) => (4, node.index(), None),
+        ExecutionEvent::NodeFailed(node) => (7, node.index(), None),
+        ExecutionEvent::NodeBlocked(node) => (8, node.index(), None),
     }
 }
 

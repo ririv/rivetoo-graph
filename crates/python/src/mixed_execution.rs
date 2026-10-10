@@ -13,6 +13,8 @@ use crate::NativeExecutionBatch;
 const NATIVE_ACTION_STARTED: u8 = 5;
 const NATIVE_ACTION_COMPLETED: u8 = 6;
 type EncodedEvent = (u8, usize, Option<bool>);
+type ActionOutcome = (NodeId, Result<(), ()>);
+type NativeFailure = (usize, String);
 
 #[derive(Clone)]
 pub(crate) struct NativeActionBinding {
@@ -61,6 +63,7 @@ pub(crate) struct NativeMixedExecutionBatch {
     events: Vec<(u8, usize, Option<bool>)>,
     finished: bool,
     native_running: usize,
+    failures: Vec<NativeFailure>,
 }
 
 #[pymethods]
@@ -74,6 +77,7 @@ impl NativeMixedExecutionBatch {
         Vec<(u8, usize, Option<bool>)>,
         bool,
         usize,
+        Vec<NativeFailure>,
     ) {
         (
             self.actions.clone(),
@@ -81,6 +85,7 @@ impl NativeMixedExecutionBatch {
             self.events.clone(),
             self.finished,
             self.native_running,
+            self.failures.clone(),
         )
     }
 }
@@ -171,31 +176,38 @@ impl NativeMixedExecutionSession {
                 .map(|request| (request.node().index(), request.condition().index()))
                 .collect(),
             events,
-            finished: batch.status() == SessionStatus::Finished,
+            finished: batch.status() != SessionStatus::Running,
             native_running: state.native_running,
+            failures: Vec::new(),
         })
     }
 
     fn drain_native_completions(
         &self,
         state: &mut MixedExecutionState,
-    ) -> PyResult<(Vec<NodeId>, Vec<EncodedEvent>)> {
+    ) -> (Vec<ActionOutcome>, Vec<EncodedEvent>, Vec<NativeFailure>) {
         let completions = self.executor.drain_completions();
         let mut completed = Vec::with_capacity(completions.len());
         let mut events = Vec::with_capacity(completions.len());
+        let mut failures = Vec::new();
         for completion in completions {
             state.native_running = state
                 .native_running
                 .checked_sub(1)
                 .expect("native completion count exceeds submitted action count");
             let node = completion.node();
-            completion
-                .into_result()
-                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
-            completed.push(NodeId::new(node));
-            events.push((NATIVE_ACTION_COMPLETED, node, None));
+            match completion.into_result() {
+                Ok(()) => {
+                    completed.push((NodeId::new(node), Ok(())));
+                    events.push((NATIVE_ACTION_COMPLETED, node, None));
+                }
+                Err(error) => {
+                    completed.push((NodeId::new(node), Err(())));
+                    failures.push((node, error.to_string()));
+                }
+            }
         }
-        Ok((completed, events))
+        (completed, events, failures)
     }
 }
 
@@ -216,8 +228,8 @@ impl NativeMixedExecutionSession {
     #[pyo3(signature = (completed, conditions, skipped, available))]
     fn advance(
         &self,
-        completed: Vec<usize>,
-        conditions: Vec<(usize, bool)>,
+        completed: Vec<(usize, bool)>,
+        conditions: Vec<(usize, Option<bool>)>,
         skipped: Vec<usize>,
         available: usize,
     ) -> PyResult<NativeMixedExecutionBatch> {
@@ -225,7 +237,8 @@ impl NativeMixedExecutionSession {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (native_completed, mut native_events) = self.drain_native_completions(&mut state)?;
+        let (native_completed, mut native_events, failures) =
+            self.drain_native_completions(&mut state);
         let newly_available = native_completed.len();
         let batch = state
             .session
@@ -233,11 +246,18 @@ impl NativeMixedExecutionSession {
                 ExecutionUpdate::new(
                     completed
                         .into_iter()
-                        .map(NodeId::new)
+                        .map(|(node, success)| {
+                            (NodeId::new(node), if success { Ok(()) } else { Err(()) })
+                        })
                         .chain(native_completed),
-                    conditions.into_iter().map(|(condition, value)| {
-                        ConditionResolution::new(ConditionId::new(condition), value)
-                    }),
+                    conditions
+                        .into_iter()
+                        .map(|(condition, value)| match value {
+                            Some(value) => {
+                                ConditionResolution::new(ConditionId::new(condition), value)
+                            }
+                            None => ConditionResolution::failed(ConditionId::new(condition)),
+                        }),
                     skipped.into_iter().map(NodeId::new),
                 ),
                 available + newly_available,
@@ -246,6 +266,7 @@ impl NativeMixedExecutionSession {
         let mut result = self.dispatch(&mut state, &batch)?;
         native_events.append(&mut result.events);
         result.events = native_events;
+        result.failures = failures;
         Ok(result)
     }
 
@@ -276,6 +297,7 @@ impl From<NativeExecutionBatch> for NativeMixedExecutionBatch {
             events: batch.events,
             finished: batch.finished,
             native_running: 0,
+            failures: Vec::new(),
         }
     }
 }

@@ -124,7 +124,7 @@ where
             }
         }
 
-        if batch.status() == rivetoo_graph::SessionStatus::Finished && tasks.is_empty() {
+        if batch.status() != rivetoo_graph::SessionStatus::Running && tasks.is_empty() {
             break;
         }
         if tasks.is_empty() {
@@ -159,7 +159,7 @@ where
         batch = session
             .advance(
                 ExecutionUpdate::new(
-                    completed,
+                    completed.into_iter().map(|node| (node, Ok(()))),
                     [],
                     host.initially_skipped().map_err(DriverError::Host)?,
                 ),

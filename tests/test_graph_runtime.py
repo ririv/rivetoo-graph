@@ -532,21 +532,17 @@ def test_graph_plan_run_does_not_record_results_for_failed_steps() -> None:
     assert not state.results.has(StepId((0,)))
 
 
-def test_parallel_graph_failure_requests_active_stop() -> None:
+def test_parallel_graph_failure_does_not_request_global_stop() -> None:
     execution_control = GraphExecutionControl()
-    stop_seen = threading.Event()
+    survivor_completed = threading.Event()
 
     def _fail(_run_ctx: StepRunContext) -> object:
         raise RuntimeError("boom")
 
-    def _wait_for_stop(_run_ctx: StepRunContext) -> object:
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            if execution_control.stop_requested():
-                stop_seen.set()
-                return None
-            time.sleep(0.01)
-        raise AssertionError("parallel failure did not request global stop")
+    def _survive(_run_ctx: StepRunContext) -> object:
+        assert not execution_control.stop_requested()
+        survivor_completed.set()
+        return None
 
     graph = Graph.from_wiring(
         label="root",
@@ -557,7 +553,7 @@ def test_parallel_graph_failure_requests_active_stop() -> None:
             ).wire(),
             Step(
                 label="wait",
-                action=LeafAction(fn=_wait_for_stop),
+                action=LeafAction(fn=_survive),
             ).wire(),
         ),
     )
@@ -570,7 +566,8 @@ def test_parallel_graph_failure_requests_active_stop() -> None:
             execution_control=execution_control,
         ).run(options=ThreadGraphRunOptions(workers=2))
 
-    assert stop_seen.is_set()
+    assert survivor_completed.is_set()
+    assert not execution_control.stop_requested()
 
 
 def test_async_graph_failure_waits_for_started_steps() -> None:
@@ -600,7 +597,7 @@ def test_async_graph_failure_waits_for_started_steps() -> None:
         plan.run(options=AsyncGraphRunOptions(concurrency=2))
 
     assert survivor_completed
-    assert plan.execution_control.stop_requested()
+    assert not plan.execution_control.stop_requested()
 
 
 @pytest.mark.parametrize(
@@ -640,7 +637,7 @@ def test_execution_stop_does_not_dispatch_ready_successor(
     assert calls == ["first"]
 
 
-def test_shared_execution_control_stops_following_plan() -> None:
+def test_step_failure_does_not_cancel_shared_execution_control() -> None:
     calls: list[str] = []
     execution_control = GraphExecutionControl()
 
@@ -662,10 +659,9 @@ def test_shared_execution_control_stops_following_plan() -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         first_plan.run()
-    with pytest.raises(GraphExecutionStopped):
-        second_plan.run()
+    second_plan.run()
 
-    assert calls == []
+    assert calls == ["package"]
 
 
 def test_graph_plan_reads_nested_result_by_step_ref() -> None:

@@ -35,6 +35,8 @@ class ExecutionRenderStatus(StrEnum):
     SKIPPED = "skipped"
     SKIPPED_BY_ANCESTOR = "skipped_by_ancestor"
     NOT_REACHED = "not_reached"
+    FAILED = "failed"
+    BLOCKED = "blocked"
 
 
 def render_graph_execution(
@@ -72,6 +74,7 @@ def render_live_graph_execution(
         for step_id, _label_path in leaf_steps
         if step_id not in snapshot.completed_steps
         and step_id not in snapshot.skipped_steps
+        and step_id not in snapshot.node_failures
     )
     last_step_id = snapshot.executed_steps[-1] if snapshot.executed_steps else None
     running_text = _summarize_paths(running_labels, fallback="idle")
@@ -209,6 +212,8 @@ def resolve_execution_status(
     active_step_ids: set[StepId],
     ancestor_skipped: bool,
 ) -> ExecutionRenderStatus:
+    if failure := snapshot.node_failures.get(step_id):
+        return ExecutionRenderStatus(failure.value)
     if ancestor_skipped:
         return ExecutionRenderStatus.SKIPPED_BY_ANCESTOR
     if step_id in snapshot.skipped_steps:
@@ -256,6 +261,7 @@ def active_execution_step_ids(
         *snapshot.executed_steps,
         *snapshot.entered_composites,
         *snapshot.skipped_steps,
+        *snapshot.node_failures,
     ]:
         current: StepId | None = step_id
         while current is not None:
@@ -274,6 +280,7 @@ def deepest_running_step_ids(
         for step_id in snapshot.executed_steps
         if step_id not in snapshot.completed_steps
         and step_id not in snapshot.skipped_steps
+        and step_id not in snapshot.node_failures
     ]
     running_set = set(running)
     ancestors_with_running_children: set[StepId] = set()

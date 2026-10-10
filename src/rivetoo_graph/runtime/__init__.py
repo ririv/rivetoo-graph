@@ -14,9 +14,10 @@ if TYPE_CHECKING:
     from .parallel_executor import ParallelGraphExecutor
     from .run import AsyncGraphRunOptions, GraphRunOptions, ThreadGraphRunOptions
     from .serial_executor import SerialGraphExecutor
-    from .state import GraphExecutionSnapshot, GraphExecutionState
+    from .state import GraphExecutionSnapshot, GraphExecutionState, GraphNodeFailure
 
 __all__ = [
+    "GraphNodeFailure",
     "GraphExecutionState",
     "GraphExecutionSnapshot",
     "GraphExecutionControl",
@@ -34,6 +35,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "GraphNodeFailure": ".state",
     "GraphActionLog": ".action_log",
     "NoGraphActionLog": ".action_log",
     "NO_GRAPH_ACTION_LOG": ".action_log",

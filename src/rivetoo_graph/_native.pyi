@@ -12,7 +12,8 @@ class ExperimentalCallbackHost(Protocol):
     def resolve_conditions(
         self,
         requests: list[tuple[int, int]],
-    ) -> list[tuple[int, bool]]: ...
+    ) -> list[tuple[int, bool | None]]: ...
+    def raise_failures(self) -> None: ...
     def apply_events(self, events: list[tuple[int, int, bool | None]]) -> None: ...
     def run_leaf(self, node: int) -> None: ...
     def stop_requested(self) -> bool: ...
@@ -108,8 +109,8 @@ class NativeExecutionSession:
     def start(self, max_actions: int) -> NativeExecutionBatch: ...
     def advance(
         self,
-        completed: list[int],
-        conditions: list[tuple[int, bool]],
+        completed: list[tuple[int, bool]],
+        conditions: list[tuple[int, bool | None]],
         skipped: list[int],
         max_actions: int,
     ) -> NativeExecutionBatch: ...
@@ -123,14 +124,15 @@ class NativeMixedExecutionBatch:
         list[tuple[int, int, bool | None]],
         bool,
         int,
+        list[tuple[int, str]],
     ]: ...
 
 class NativeMixedExecutionSession:
     def start(self, capacity: int) -> NativeMixedExecutionBatch: ...
     def advance(
         self,
-        completed: list[int],
-        conditions: list[tuple[int, bool]],
+        completed: list[tuple[int, bool]],
+        conditions: list[tuple[int, bool | None]],
         skipped: list[int],
         available: int,
     ) -> NativeMixedExecutionBatch: ...
