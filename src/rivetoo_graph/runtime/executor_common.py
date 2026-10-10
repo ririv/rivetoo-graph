@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import threading
@@ -9,6 +10,8 @@ from ..model import Graph, StepLabelPath
 from ..observe import GraphObservationEvent, GraphObservationPhase, GraphObserver
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from ..results import GraphResultStore
     from .run import CompiledGraphRun
     from .state import GraphExecutionState
@@ -16,12 +19,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def await_result(result: object) -> object:
-    # LeafAction 既可能返回普通值，也可能返回 awaitable；
-    # 这里把两种返回形态统一收口，供三个执行器共用。
+def resolve_action_result(result: object) -> object:
+    """在线程/串行执行器中完成 action 返回值，普通值不启动事件循环。"""
+
+    # 按实际返回值分发，而不是按函数声明；同步函数也可能返回 awaitable。
+    # 每个同步 action 只增加 O(1) 类型检查，不再创建/关闭一个事件循环。
     if inspect.isawaitable(result):
-        return await result
+        return asyncio.run(_await_result(result))
     return result
+
+
+async def _await_result(result: Awaitable[object]) -> object:
+    # Python 3.13 的 asyncio.run 接受 coroutine；包装后也能支持自定义 awaitable。
+    return await result
 
 
 def as_graph_result(

@@ -38,6 +38,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - [能力依赖与子图端口](./capabilities.md)
 - [Rust 架构与迁移边界](./rust-architecture.md)
 - [大规模 Recipe 图基准](./recipe_scale_benchmark.md)
+- [Step 开销基准](./step_overhead_benchmark.md)
 
 ## 核心边界
 

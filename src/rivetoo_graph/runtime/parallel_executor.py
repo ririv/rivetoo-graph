@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import threading
 import traceback
 from typing import TYPE_CHECKING
@@ -16,8 +15,8 @@ from .batch_driver import run_threaded_session
 from .compiled import CompiledExecutionHost
 from .executor_common import (
     as_graph_result,
-    await_result,
     emit_graph_observation,
+    resolve_action_result,
     step_thread_name,
 )
 from .run import (
@@ -151,7 +150,7 @@ class ParallelGraphExecutor:
 
             def _invoke() -> object:
                 result = action.invoke(run_ctx)
-                return asyncio.run(await_result(result))
+                return resolve_action_result(result)
 
             if run_ctx.component_log_path is None:
                 value = _invoke()

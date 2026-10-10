@@ -19,6 +19,21 @@
 正式 runtime 只接收 `GraphCompilation`。action 在运行期返回的 `Graph` 会携带父
 step id、label path 与父结果作用域，再进入同一个编译执行流程。
 
+## Python action 返回值
+
+串行和线程执行器先调用 Python action，再根据实际返回值处理：
+
+- 普通值直接进入结果记录；不为同步 action 创建 asyncio 事件循环。
+- awaitable 在当前执行线程的新事件循环中完成等待；支持 coroutine function、
+  同步函数返回的 coroutine，以及自定义 awaitable。
+- 返回 `Graph` 时仍执行动态子图，完成后再结束当前 Step。
+
+不能只根据 `async def` 判断是否需要等待，因为普通函数也可以返回 awaitable。
+异步执行器仍使用其请求级事件循环，同步 action 通过 `asyncio.to_thread()` 执行，
+不受这条同步快速路径影响。日志作用域、异常传播、结果存储和 Step 生命周期保持不变。
+
+各项开销的分离测量见 [Step 开销基准](./step_overhead_benchmark.md)。
+
 ## 条件执行
 
 条件模型现在分成两类：
