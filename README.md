@@ -22,3 +22,7 @@ maturin develop
 ```
 
 完整的模型、组合与执行说明见 [Graph 文档](./docs/index.md)。
+
+## 许可证
+
+本项目采用 [MIT 许可证](./LICENSE)。
