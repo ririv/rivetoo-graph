@@ -1,8 +1,8 @@
-# Rust 架构与迁移边界
+# Rust 架构与语言边界
 
-`rivetoo-graph` 保留 Python 声明 API，并把规模敏感的编译执行图逐步迁移到 Rust。
-迁移目标不是为零散 Python 类型增加原生包装，而是让 Rust 一次持有完整的编译图、
-调度索引和单次执行状态。
+`rivetoo-graph` 保留 Python 声明 API，正式执行使用 Rust 声明编译器和调度状态机。
+Rust 持有完整的编译图、调度索引和单次执行状态；Python 保留任意 callable、
+结果对象与宿主集成。本文描述已实现的边界，不是待执行的迁移计划。
 
 ## 分支
 
@@ -11,8 +11,7 @@
 - `main`
   - Rust 化主线
 
-两条分支从同一个 Python 基线提交分出。`main` 不为旧实现保留并行状态机；某层语义
-完成迁移并通过行为测试后，删除被替代的 Python 实现。
+`python` 是历史对照，不是正式执行兜底。`main` 不保留第二套 Python 调度状态机。
 
 ## crate 边界
 
@@ -25,10 +24,13 @@
 - `crates/native-graph`
   - 持有 `NativeStep`、graph-owned arcs 与完整 `NativeGraph`
   - 原生 adapter 以整图为边界接入，不向 Python 暴露单个 action
+- `crates/topology`
+  - 只依赖 Rust 标准库，持有整数节点、邻接索引和 DAG 算法
+  - 不认识 action、条件或宿主领域
 - `crates/core`
   - package 名为 `rivetoo-graph`
-  - 只依赖 Rust 标准库
-  - 持有纯拓扑、编译执行图和调度状态机
+  - 依赖 workspace 内的 topology，不依赖第三方库
+  - 持有声明编译、编译执行图、能力解析和调度状态机
 - `crates/python`
   - 私有 Python adapter
   - 独占 PyO3 依赖
@@ -64,7 +66,7 @@ executor adapter crate
 
 ## 当前执行边界
 
-所有正式执行路径共享同一个 Rust 声明编译器和 execution session：
+所有正式执行路径共享同一套 Rust 声明编译器和 execution session 实现：
 
 ```text
 Python Graph 声明
@@ -73,7 +75,7 @@ Python Graph 声明
 Rust GraphDeclaration
     ├── 静态节点裁剪
     ├── 层级与声明作用域收集
-    ├── capability binding 解析
+    ├── 显式 capability binding 的端口定位
     └── 条件与 prerequisite 投影
     │
     ▼
@@ -83,7 +85,6 @@ Rust CompiledExecutionGraph
     ├── graph membership → owner / roots / children
     ├── 条件 reads 与 prerequisite 索引
     ├── dependents 索引
-    ├── capability provider 解析与歧义校验
     ├── capability binding lowering
     └── DAG 校验
     │
@@ -97,7 +98,8 @@ Rust ExecutionSession
                         └── 完成进入 Rust completion queue
 ```
 
-Rust 不逐节点反向调用 Python。Python 只在有状态变化时通过 `start/advance` 与 session
+正式 runtime 不逐 action 反向调用 Python；编译时静态条件叶子的求值仍会调用 Python。
+Python 在有状态变化时通过 `start/advance` 与 session
 交换一批数据：
 
 - Rust 只把 ready 的 Python action、待求值 predicate 和生命周期 event 批量返回 Python
@@ -108,7 +110,8 @@ Rust 不逐节点反向调用 Python。Python 只在有状态变化时通过 `st
 
 声明期已知子图由 Rust 编译为 composite 与 leaf；子图边界不会被隐式删除。action 在
 运行期返回的新 `Graph` 无法提前编译，因此会以当前 step id、label path 和父作用域作为
-显式输入，再次进入同一个 Rust 编译器与 session，而不是回到 Python dynamic scheduler。
+显式输入，再次进入同一个 Rust 编译器，并创建嵌套 session，而不是回到 Python dynamic scheduler。
+嵌套 session 当前不共享外层的全局并发预算；这与声明期挂载的子图不同。
 
 `mode="dynamic"` 与 `mode="compiled"` 目前保留的是兼容的展示和 composite 记录语义，
 不再代表两套执行引擎。capability binding 在两种模式下进入同一 lowering。
@@ -130,9 +133,11 @@ action，对比：
 - Tokio callback / batch：约 3.98 倍
 
 该基准专门放大调度边界成本，不代表真实构建耗时比例；真实 action 较重时差距会被
-稀释。但它足以否决“为 Python callable 引入逐 action Tokio/PyO3 往返会更快”的假设。
-Tokio 仍保留为可重复实验，正式路径选择事件驱动的混合协议。Rust action 改变的是
-action 所有权，不会推翻这一结论：Python 只挂载完整 `NativeGraph`，原生 leaf 的 action
+稀释。这是当时版本、机器和工作负载下的结果，不能据此断言任何 Rust runtime 都更慢，
+也不是当前版本的性能数值。后续同步 action 快速路径的测量见
+[Step 开销基准](./step_overhead_benchmark.md)。
+Tokio 仍保留为可重复实验，正式路径选择事件驱动的混合协议。Rust action 则改变了
+action 所有权：Python 只挂载完整 `NativeGraph`，原生 leaf 的 action
 调用不经过 Python；混合 driver 只在批次边界接收完成事件并推进统一 session。
 
 ## 唯一事实来源
@@ -145,7 +150,7 @@ Rust lowering 接受图作用域和节点成员关系，而不是同时接受 `o
 
 Rust 会校验 composite 与 child graph 的双向关系，再从 graph membership 派生 node
 owner；roots 和 composite children 最终只从 owner 建立。这样层级关系不会出现三套可
-互相矛盾的声明。冻结后的 capability binding 也作为独立结构输入交给 Rust，再由 Rust
+互相矛盾的声明。定位后的 capability binding 也作为独立结构输入交给 Rust，再由 Rust
 lower 为普通 prerequisite；Python 展示模型从 Rust 的最终 prerequisite 恢复，不保留
 另一套改写规则。
 
@@ -162,31 +167,15 @@ prerequisite 同样使用和类型区分：
 运行时条件由 `ConditionId` 引用；predicate 对象保留在 Python adapter，core 只保存
 其显式 `reads`。因此 core 可以判断阻塞关系和环，但不会解释 Python 业务函数。
 
-## 依赖图的后续迁移
+## 领域依赖图的边界
 
-依赖图暂时继续使用 Python 模型，但 core 的 `NodeId`、`Arc`、`DirectedTopology` 和
-`DagTopology` 保持领域无关，未来可以直接复用。
+package 选择、版本、选项、平台条件等属于宿主的依赖解析业务，不属于执行图核心。
+本仓库不规定宿主的依赖图必须迁入 Rust，也不把某个宿主的迁移计划作为 Graph API。
 
-依赖图接入时不能把通用拓扑包装成逐方法 FFI API，例如反复执行：
-
-```text
-Python 创建 Rust topology
-Python 查询 reachable
-Python 再创建 Rust topology
-Python 查询 adjacency
-```
-
-正确边界是一次传入 `nodes + roots + enabled edges`，由 Rust 在一次调用内完成：
-
-- 可达性
-- 不可达节点裁剪
-- 环检测
-- 拓扑序
-- 最终邻接索引
-
-然后一次返回完整解析结果。Python 只负责把领域 identity 映射到连续整数 ID，并在返回
-时恢复领域对象。依赖边条件在迁移前仍由 Python 求值，不需要为了复用拓扑而把平台领域
-模型塞进 core。
+Python 的通用拓扑 API 与 Rust 的 topology crate 分别提供纯图操作。宿主可以按自己的
+数据边界选择使用；执行图内部使用 Rust topology，并不意味着 Python 的通用拓扑 API
+已经成为它的 FFI 包装。若未来需要跨语言批量分析，应先测量完整数据转换与算法成本，
+避免逐节点往返，并继续让不稳定的领域语义留在宿主。
 
 ## 保留的宿主边界
 

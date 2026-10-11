@@ -1,5 +1,8 @@
 # 大规模 Recipe 图基准
 
+本文保留 2026-08-28 版本的历史测量，不代表当前主线性能。后续同步 action 执行路径
+已有优化，见 [Step 开销基准](./step_overhead_benchmark.md)。原始样本不随实现更新改写。
+
 ## 目的
 
 该实验回答一个特定问题：当一次请求包含数千个 recipe，并且每个 recipe 都拥有多个
@@ -102,7 +105,7 @@ index.setdefault(key, frozenset(scope.values()))
 ```
 
 即使 `key` 已存在，Python 也会先计算默认值；在大根作用域下仍会重复执行数百万次 hash。
-当前实现先判断 key 是否存在，再只为每个不同作用域构造一次集合。
+当时的修复改为先判断 key 是否存在，再只为每个不同作用域构造一次集合。
 
 修复后，Rust 编译中位数从约 11.61 秒降至 0.49 秒，纯 Python 从约 11.31 秒降至
 1.00 秒。profile 中函数调用量也从约 5,504 万次降至约 118 万次。
@@ -114,7 +117,7 @@ index.setdefault(key, frozenset(scope.values()))
 native graph、运行期条件和节点侧表，既允许表达只传一部分输入的非法状态，也无法明确
 区分“验证 Python 手工构造的编译模型”和“绑定 Rust 已验证结果”两条路径。
 
-当前输入改为显式和类型：
+该轮修改将输入改为显式和类型：
 
 - Python 手工构造的 `GraphCompilation` 继续执行完整验证，再生成 native execution graph
 - Rust 编译结果必须一次提供完整 graph、condition 和 node 侧表，Python 只做 `O(V)` 的
@@ -123,17 +126,18 @@ native graph、运行期条件和节点侧表，既允许表达只传一部分�
 同一提交前后的 5 次完整 A/B 基准中，Rust 编译中位数从约 0.41 秒降至约 0.33 秒；
 runtime 中位数分别为 9.38 秒和 9.41 秒，约 0.4% 的差异属于线程调度波动。另一次只测
 编译的 15 次 A/B 采样中，中位数从 0.3894 秒降至 0.3149 秒，均值从 0.3885 秒降至
-0.3033 秒。最新 profile 中
+0.3033 秒。该轮 profile 中
 `compile_declaration` 约为 0.08 秒，Python 侧表恢复约为 0.39 秒（含 profiler 开销）；
 剩余 Python 时间用于恢复 action、predicate、label path、observe 和结果作用域等不透明
 宿主对象，不是第二套拓扑或调度算法。
 
 ## 如何复现
 
-在 Rust 主线中：
+在 Graph 仓库根目录中，使用已安装原生扩展的虚拟环境。以下命令测量当前 checkout，
+不会自动还原历史版本；`--implementation` 只是结果标签，不负责选择或切换实现：
 
 ```bash
-PYTHONPATH=src ../.venv/bin/python benchmarks/recipe_scale.py \
+PYTHONPATH=src .venv/bin/python benchmarks/recipe_scale.py \
   --implementation rust-python \
   --recipes 2000 \
   --steps 6 \
@@ -146,8 +150,8 @@ PYTHONPATH=src ../.venv/bin/python benchmarks/recipe_scale.py \
 `PYTHONPATH` 指向其 worktree，同时仍执行主线中的脚本：
 
 ```bash
-PYTHONPATH=../work/rivetoo-graph-python/src \
-  ../.venv/bin/python benchmarks/recipe_scale.py \
+PYTHONPATH=/path/to/python-checkout/src \
+  .venv/bin/python benchmarks/recipe_scale.py \
   --implementation pure-python \
   --recipes 2000 \
   --steps 6 \
@@ -156,6 +160,9 @@ PYTHONPATH=../work/rivetoo-graph-python/src \
   --repeats 5
 ```
 
+将 `/path/to/python-checkout` 换成实际 `python` 分支 checkout 的路径；必须确认导入的
+模块来自该目录，而不是当前安装版本。历史数据的精确复现还需要对应代码和工具版本。
+
 ## 解释边界
 
 - 空 action 放大 Graph 固定成本，不代表真实 recipe action 的耗时分布
@@ -163,4 +170,4 @@ PYTHONPATH=../work/rivetoo-graph-python/src \
 - 本实验不测依赖解析、下载、缓存命中、子进程、文件系统或构建工具
 - Python 侧仍需恢复 action、predicate、label 与声明作用域等不透明宿主对象；修复复杂度
   问题后该过程已经是线性路径，是否继续下沉必须由新的 profile 和真实规模需求决定
-- 结果是当前机器上的一次工程决策记录，不是跨版本性能承诺
+- 结果是上述日期、机器与版本的一次工程决策记录，不是跨版本性能承诺

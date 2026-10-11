@@ -1,230 +1,112 @@
 # 拓扑复杂度与实现开销
 
-本文档说明 `Arc`、`DirectedTopology`、`DAGTopology` 以及执行 `Graph`
-投影拓扑时的时间复杂度、空间复杂度和实际遍历次数。这里讨论的是纯拓扑处理，
-不包含 step action 自身的执行成本。
+本文区分 Python 通用拓扑 API、执行 Graph 的声明校验以及 Rust 编译后的全局 DAG。
+它们不是同一条调用链。以下复杂度不包含 action、宿主 predicate 或日志 I/O 的成本；
+Python 哈希表操作按平均 O(1) 计，宿主自定义节点的 hash / equality 成本另计。
 
-## 记号
+## 两套纯拓扑入口
 
-- `V`
-  - 节点数量；对执行图而言就是 step 数量
-- `E`
-  - 领域模型显式声明的边数量
-- `B`
-  - 所有 `RuntimeCondition.reads` 引用的总数
-- `A`
-  - 去重后真正进入 `DirectedTopology` 的 arc 数量
+| 入口 | 实现 | 用途 |
+| --- | --- | --- |
+| `rivetoo_graph.topology` | Python，DAG 校验使用 `graphlib` | 可哈希领域节点的通用有向图 |
+| `crates/topology` | Rust，整数节点与邻接索引 | 执行图声明校验和编译后 DAG 校验 |
 
-对执行图而言：
+Python 的 `DirectedTopology` 并不是 Rust topology 的逐方法 FFI 包装。
+执行 `Graph` 也不会先创建 Python `DirectedTopology` 再交给 Rust。
+
+## Python 通用拓扑
+
+对于 V 个节点、A 条输入 arc：
+
+- `DirectedTopology(nodes, arcs)` 接受 iterable，创建规范化节点、arc 和双向邻接索引。
+- 每条 arc 在同一次消费中验证端点并写入前驱、后继索引；不会主动去重输入 arc。
+- 构造时间、持久空间均为 O(V + A)。
+- `predecessors_by_node()` / `successors_by_node()` 返回已有只读映射，不重扫关系。
+- `reachable_from(roots)` 先验证 roots，再沿后继遍历；时间为 O(V + R + Aᵣ)，
+  R 是输入 root 数量，Aᵣ 是可达区域的 arc 数量。它仍会创建全体节点集合，不能把
+  小闭包查询描述成只访问可达节点的成本。待处理栈可能保存重复端点引用，
+  最坏辅助空间为 O(V + A + R)。
+
+`DAGTopology` 组合 `DirectedTopology`，构造时调用 Python
+`graphlib.TopologicalSorter.prepare()` 校验无环，时间和辅助空间为 O(V + A)。
+`topological_order()` 是另一次 O(V + A) 操作，构造时不会预先保存排序结果。
+
+## 执行 Graph 的声明校验
+
+这里定义：
+
+- V：本层 Graph 的 Step 数量。
+- E：本层显式边数量。
+- B：条件边和 `Step.when` 中所有 `RuntimeCondition.reads` 引用总数。
+- A：去重后的本层阻塞 arc 数量，A ≤ E + B。
+
+本层阻塞关系来自普通边、条件边的来源节点和运行时条件的读取依赖。
+条件边在声明时保守参与无环校验，即使其静态条件在随后编译时为假。
+`reads` 的遍历来自显式数据依赖，不是拓扑排序额外制造的业务关系。
+
+当前 [model.py](../src/rivetoo_graph/model.py) 的实际链路是：
 
 ```text
-A <= E + B
-```
-
-`CapabilityBinding` 由组件端口 lowering 处理，不会直接作为阻塞 arc 进入当前
-执行图拓扑，因此这里的 `E` 是复杂度上界，不表示每一条领域边都会生成 arc。
-
-## 执行图的拓扑投影
-
-执行 `Graph` 中存在三类会阻塞 step 的关系：
-
-- 普通 `UnconditionalEdge`
-- `ConditionalEdge` 的来源 step，以及它的运行时条件 `reads`
-- `Step.when` 的运行时条件 `reads`
-
-`_validated_blocking_arcs()` 以生成器方式读取这些关系：
-
-```text
-读取一条领域关系
+验证 Step 并分配本层整数索引
     ↓
-生成对应 Arc
+_validated_blocking_arcs：遍历边与 reads，去重并生成 Arc
     ↓
-DirectedTopology 立即消费并写入索引
+物化 blocking_arcs 元组
+    ↓
+转换为整数端点对列表
+    ↓ 一次批量调用
+Rust dag_cycle：创建拓扑索引并检测环
 ```
 
-它不会先构造完整的中间 arc 列表，再重新扫描该列表。关系投影的时间复杂度是：
+这里确实存在 Arc 元组和整数端点列表，不是“生成一条关系就直接写入 Rust 索引”的
+零中间集合实现。关系投影、转换、索引构造和环检测各自进行线性处理，总时间仍为
+O(V + E + B)，峰值辅助空间为 O(V + A)。多个中间表示增加常数成本，不改变渐进阶。
 
-```text
-O(V + E + B)
-```
+B = 0 时，总时间为 O(V + E)。这也适用于不读取 Step 结果的运行时条件，
+不能简单把所有运行时条件都视为增加一个 V 倍的循环。
 
-其中 `reads` 并不是拓扑排序自身引入的循环。它们是运行时条件的显式结果依赖，
-必须先投影为阻塞关系，才能参与环检测和调度。
+## 能力端口与全局编译校验
 
-如果没有 `RuntimeCondition.reads`，即 `B = 0`，复杂度退化为：
+`CapabilityBinding` 在声明阶段校验组件及端口，但不直接作为本层 composite 之间的
+阻塞 arc。实际依赖是“提供者内部出口 → 消费者内部入口”，必须在编译时定位并 lower。
 
-```text
-O(V + E)
-```
+接口归属校验会遍历当前图的 Python 子图挂载结构，建立 Step 挂载次数索引，再验证
+端口引用。若挂载节点数为 M、端口引用数为 R，则该项时间为 O(M + R)、空间为 O(M)；
+它不是上节本层 V 的一部分。重复挂载导致端口引用有歧义时直接报错。
 
-这同样适用于不读取 step result 的运行时条件；决定因素是 `B`，而不是条件类型
-名称本身。
+Rust 编译器随后校验完整执行 DAG，包括：
 
-## DirectedTopology 的索引创建
+- 声明期已知子图与 composite 的依赖；
+- 运行时条件的 reads；
+- lower 后的跨子图 capability bindings。
 
-`DirectedTopology` 在消费每条 `Arc` 时同时完成：
+若最终执行节点数为 N、展开后的阻塞关系数为 L，纯 DAG 校验时间和空间为
+O(N + L)。一个能力绑定可能指向多个入口，L 应统计展开后的关系，而非只数 binding。
 
-- 验证 `source` 和 `target` 均属于节点集合
-- 保存规范化后的 `Arc`
-- 写入前驱索引
-- 写入后继索引
-
-因此不会为了创建前驱和后继索引再分别扫描完整的 `arcs`。这一阶段的时间复杂度
-是：
-
-```text
-O(V + A)
-```
-
-创建完成后：
-
-- `predecessors_by_node()` 直接返回只读索引，不扫描 `arcs`
-- `successors_by_node()` 直接返回只读索引，不扫描 `arcs`
-- `reachable_from()` 使用后继索引遍历可达子图，最坏为 `O(V + A)`
-
-## DAG 校验
-
-`DAGTopology` 使用已经创建好的前驱索引进行环检测。环检测必须读取节点及其前驱
-关系，时间复杂度是：
-
-```text
-O(V + A)
-```
-
-因此，关系投影、索引创建和 DAG 校验组合后的渐进复杂度仍然是：
-
-```text
-O(V + E + B)
-```
-
-不能把环检测本身省略；能够避免的是在环检测前反复扫描同一份领域边或
-`Arc`。
-
-`DAGTopology.topological_order()` 当前是独立的按需操作。如果调用它，会再次创建
-一次拓扑排序状态并执行 `O(V + A)` 的遍历；构造 `DAGTopology` 本身不会缓存或提前
-计算这个顺序。
-
-## 实际遍历次数
-
-以一次执行图声明校验为例，和关系数量有关的完整遍历是：
-
-- `Graph.edges`
-  - 投影阶段读取一次
-- `RuntimeCondition.reads`
-  - 投影阶段读取一次
-- 生成的 `Arc`
-  - 由 `DirectedTopology` 流式消费一次，同时建立双向索引
-- 前驱索引
-  - 由 DAG 环检测读取一次
-
-这里的“流式消费一次”仍然表示每条领域关系和每条 arc 都会执行固定数量的 Python
-操作，但不存在“先完整扫描 `edges`，再完整扫描一个中间 arc 列表来创建索引”的
-额外阶段。
-
-节点集合会在以下职责中被常数次遍历：
-
-- 校验重复节点
-- 分配声明期内部身份
-- 初始化前驱和后继索引
-- 生成只读索引
-
-这些遍历都只依赖 `V`，不会改变线性渐进复杂度。文档记录遍历次数的目的不是承诺
-永远固定的 Python `for` 数量，而是保证同一批关系不会因抽象分层产生无职责的重复
-全量扫描。
+这不等于承诺整个编译过程恒为 O(N + L)：声明遍历、层级路径构造、Python 侧表、
+静态条件求值和 PyO3 转换都有各自成本。运行期返回的新图还会单独编译并创建嵌套
+session，不能在构图前把它的规模算入已知静态图。
 
 ## GraphWiring 的入口与出口
 
-`GraphWiring.entries` 和 `GraphWiring.exits` 是派生边界，不是另一份拓扑事实来源。
-边界计算同时读取：
+`GraphWiring.entries` / `exits` 是用于 DSL 接线的结构边界，不是
+`CapabilityInterface` 的具名端口，也不是额外保存的一份拓扑。
 
-- 显式 `GraphEdge`
-- `ConditionalEdge.condition.reads`
-- `Step.when.reads`
+一次边界计算读取：
 
-当前一次边界计算会：
+- 显式普通边与条件边；
+- 条件边和 Step 的运行时条件 reads；
+- 本层 Step 顺序，用于返回有序边界。
 
-- 遍历一次 `edges`
-- 遍历一次 `steps` 及其 `reads`
-- 遍历一次 `steps` 生成有序边界结果
+时间为 O(V + E + B)，辅助空间为 O(V)。`entries` 与 `exits` 是独立属性，
+分别读取会分别计算；串行 DSL 通常读取左侧 exits 和右侧 entries。
+声明对象当前没有为此维护可变缓存。
 
-时间复杂度是：
+## 性能结论的适用范围
 
-```text
-O(V + E + B)
-```
+Rust 并未降低上述线性算法的渐进复杂度。它的收益来自紧凑整数索引、原生循环和
+批量调度；成本也包含 Python 声明遍历、临时对象及跨语言转换。不能只凭“使用 Rust”
+推断某张小图一定更快，也不能把 O(V + E) 理解为只执行一遍循环。
 
-辅助空间只保存去重后的节点集合：
-
-```text
-O(V)
-```
-
-`entries` 和 `exits` 是两个独立属性；若调用方对同一个 wiring 分别读取二者，当前
-会分别执行一次线性边界计算。DSL 的串行组合通常只读取左侧 `exits` 和右侧
-`entries`。目前没有为了消除这一次可预测计算而向不可变声明对象加入可变缓存。
-
-## 空间复杂度
-
-`DirectedTopology` 持有：
-
-```text
-nodes                 O(V)
-arcs                  O(A)
-predecessor index     O(V + A)
-successor index       O(V + A)
-```
-
-因此它的持久空间复杂度是：
-
-```text
-O(V + A)
-```
-
-执行图投影期间还会临时持有 arc 去重集合和 Rust DAG 校验状态，峰值辅助空间仍然是：
-
-```text
-O(V + A)
-```
-
-代入 `A <= E + B` 后，可以写成：
-
-```text
-O(V + E + B)
-```
-
-对执行 `Graph` 而言，这份 `DirectedTopology` 只在声明校验期间存在，校验完成后不
-保存到 `Graph`，所以增加的是构造期峰值内存。对 `ResolvedDependencyDAG` 而言，
-拓扑会作为解析结果持续保存，因为依赖编排还需要后继查询和可达性分析。
-
-## 相比旧模型的常数开销
-
-如果旧实现已经用一次线性遍历直接创建 Python `graphlib` 前驱映射，那么 Rust 模型不会改善
-它的渐进复杂度。新模型增加的常数成本包括：
-
-- 为每条去重关系创建 `Arc` 对象
-- 同时保存前驱和后继引用
-- 在纯拓扑边界再次验证 arc 端点
-- 执行图校验期间保存临时去重集合
-
-因此新模型的收益不是更低的时间或空间复杂度，而是：
-
-- `DirectedTopology` 与 `DAGTopology` 在类型上区分“允许有环”和“已经验证无环”
-- 执行图与依赖图共享同一套环检测、前后继查询和可达性语义
-- 领域模型不再分别维护重复的拓扑算法
-- 纯数据边界可以直接映射为未来的 Rust `Arc<N>`、`DirectedTopology<N>` 和
-  `DAGTopology<N>`
-
-如果只有执行图一个消费者，这些常数成本未必值得。当前纯拓扑层同时服务执行图与
-其它有向图领域，并且已经明确考虑把图核心迁移到 Rust，因此这层窄抽象成立。
-
-## Rust 迁移后的预期变化
-
-迁移到 Rust 不会改变 `O(V + E + B)` 的渐进复杂度，但可以降低常数开销：
-
-- `Arc` 可以连续存储在 `Vec<Arc<NodeId>>` 中，避免每条关系一个 Python 对象
-- 前驱和后继索引可以使用紧凑的 `NodeId` 与连续数组
-- DAG 不变量可以只通过验证构造函数建立
-- 环检测、可达性和拓扑顺序无需跨 Python 边界逐节点调用
-
-Python 侧应继续只负责把领域图投影为纯节点和纯关系；`Step.action` 与其它宿主领域
-对象不进入纯拓扑 FFI 边界。
+历史测量见 [Recipe 规模基准](./recipe_scale_benchmark.md) 和
+[Step 开销基准](./step_overhead_benchmark.md)。测量覆盖的版本与负载以各文档为准。

@@ -314,8 +314,8 @@ A〔任一内部步骤失败，最终整体失败〕→ B〔整个子图被阻�
 
 ## 编译与执行
 
-能力绑定跨越保留边界的子图。freeze 阶段把接口引用解析成内部 `StepId`，compile
-阶段再把它 lower 为提供者出口到消费者入口的普通编译依赖：
+能力绑定跨越保留边界的子图。声明编译器把接口引用定位到内部节点，再将其
+lower 为提供者出口到消费者入口的普通编译依赖：
 
 ```text
 A.3 ── capability 123 ──> B.b
@@ -332,39 +332,19 @@ GraphPlan(label="root", graph=graph).run(mode="compiled")
 GraphPlan(label="root", graph=graph).run(mode="dynamic")
 ```
 
-## Rust 迁移边界
+## 当前语言边界
 
-当前数据模型刻意保持为容易迁移的不可变值和和类型：
+Python 使用 Step 对象作为声明期引用。能力解析入口先校验接口引用与组件归属，再把
+component、capability、requirement 和 selection 编码为整数 ID，一次交给 Rust 的
+provider 解析器检查唯一性、歧义和显式选择。这里不会执行 action，也没有失败后换
+provider 的隐式策略。
 
-```rust
-struct AnyProviderRequirement {
-    consumer: StepHandle,
-    capability: Capability,
-}
+得到的显式 binding 随图进入声明编译器，定位内部端口并 lower 为执行依赖。最终 DAG
+校验与执行状态机都在 Rust；Python 不维护另一套 provider 选择或 binding lowering 规则。
 
-struct ExactProviderRequirement {
-    consumer: StepHandle,
-    provider: StepHandle,
-    capability: Capability,
-}
+当前端口引用的是 Python 声明中的 Step，不能直接引用不透明 NativeGraph 内部的
+NativeStep。需要公开原生子图整体完成状态时，可以由 Python Step 挂载它，并以该
+Step 作为出口。运行期才返回的子图也不能提前向外公开尚不存在的内部端口。
 
-enum CapabilityRequirement {
-    AnyProvider(AnyProviderRequirement),
-    ExactProvider(ExactProviderRequirement),
-}
-
-struct CapabilityBinding {
-    source: StepHandle,
-    target: StepHandle,
-    capability: Capability,
-}
-
-struct CapabilitySelection {
-    requirement: AnyProviderRequirement,
-    provider: StepHandle,
-}
-```
-
-Python 当前使用 Step 对象引用作为声明期 handle；迁移到 Rust 后可以直接替换成显式
-`StepHandle`。提供者解析、freeze、lowering 和 runtime 之间只传数据，不依赖 Python
-反射、动态属性或回调式选择器。
+能力提供组件及其直接出口不允许使用运行时 `when` 来决定是否存在；这与“执行失败”
+不同。provider 的选择必须在编译前确定，不能靠运行时跳过来实现候选切换。

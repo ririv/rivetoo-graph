@@ -17,7 +17,7 @@
 它统一覆盖两种情况：
 
 - 普通 leaf step 的条件启用
-- `action=Graph` 的组合 step 的条件启用
+- `action=Graph` 或 `action=NativeGraph` 的组合 step 的条件启用
 
 也就是说，当前不再需要额外引入：
 
@@ -30,7 +30,7 @@
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/model.py`
+- [src/rivetoo_graph/model.py](../src/rivetoo_graph/model.py)
 
 当前 `Step` 模型核心字段是：
 
@@ -100,9 +100,11 @@ Step(
 - 条件判定为真
   - step 正常执行
 - 条件判定为假
-  - step 直接记为：
-    - `skipped`
-    - `finished`
+  - step 进入 `Skipped` 终态，不执行 action，也不产生 action 结果
+  - skipped 是终态，不是同时拥有 `Skipped` 和 `Finished` 两个状态
+
+下文的 `when=False` / `when=True` 是“条件求值结果”的简写，不是可直接传入的参数。
+`Step.when` 接受条件对象或 `None`，不接受 bool。
 
 这条规则很重要：
 
@@ -111,7 +113,7 @@ Step(
 
 这同样适用于：
 
-- `action=Graph` 的组合 step
+- `action=Graph` 或 `action=NativeGraph` 的组合 step
 
 也就是说，若组合 step 的 `when=False`：
 
@@ -167,11 +169,12 @@ A --[condition]--> B
 ## 执行路径
 
 两种公开 mode 都先由 Rust 声明编译器把 `Step.when` 转换成节点 activation，再由
-Rust `ExecutionSession` 维护 pending、ready、running、skipped 与条件缓存。Python
+Rust `ExecutionSession` 维护节点状态（包括 failed / blocked）与条件缓存。Python
 只在 session 批量请求时求值 predicate，并把结果通过 `advance(...)` 交回。
 
 这里的关键语义是：
 
+- 运行时条件的 reads 必须先满足；若其依赖失败，条件节点会被阻断
 - 条件为假时，step 不再等待自己的 `after`
 - 因为“视为不存在”的 step 不应再阻塞下游
 - composite 保留声明期子图边界，不会被伪装成 no-op leaf
@@ -180,7 +183,7 @@ Rust `ExecutionSession` 维护 pending、ready、running、skipped 与条件缓�
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/compile.py`
+- [src/rivetoo_graph/compile.py](../src/rivetoo_graph/compile.py)
 
 正式执行直接调用 `compile_graph(...)`。条件 step 在编译中的处理是：
 
@@ -274,7 +277,7 @@ graph = Graph.from_wiring(
 
 所以 runtime 可以这样处理：
 
-- `probe` 一旦 finished
+- `probe` 成功完成后
   - 就立刻判 `when`
 - 若 `when=False`
   - `heavy_build` 直接视为不存在
@@ -282,7 +285,8 @@ graph = Graph.from_wiring(
 - 若 `when=True`
   - 再继续等待 `heavy_build.wire(after=(prepare_a, prepare_b))` 声明的 prerequisite
 
-同一个 `RuntimeCondition` 在一次 graph run 中只会判定一次。条件的
+每个编译后的条件实例在当前 session 中最多判定一次。复用同一个
+`RuntimeCondition` 对象到多个节点，不会将这些使用位置合并成一次判定。条件的
 `reads` 已满足、但其它 `after` 尚未完成时，调度器会复用已经记录的
 布尔结果，不会重复调用 predicate。
 

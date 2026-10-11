@@ -1,5 +1,8 @@
 # Step 开销基准
 
+本文记录 2026-10-10 同步 action 快速路径优化的 A/B 测量。它不包含后续失败隔离等
+改动，也不代表当前主线在任意机器上的性能；原始结果作为历史记录保留。
+
 ## 边界与结论
 
 本次测量把声明、编译、执行分开，定位短 Python action 的固定成本。
@@ -78,16 +81,18 @@ composite 并给该 composite 绑定临时日志文件。每个 action 断言日
 
 ## 复现
 
-在 Rivetoo 主仓库中，使用已安装当前 Graph 扩展的虚拟环境：
+在 Graph 仓库根目录中，使用已安装当前 Graph 扩展的虚拟环境：
 
 ```bash
-.venv/bin/python rivetoo-graph/benchmarks/step_overhead.py --nodes 1000 --repeats 5
-.venv/bin/python rivetoo-graph/benchmarks/recipe_scale.py \
+.venv/bin/python benchmarks/step_overhead.py --nodes 1000 --repeats 5
+.venv/bin/python benchmarks/recipe_scale.py \
   --recipes 2000 --steps 6 --lanes 20 --workers 8 --repeats 5
 ```
 
 第一条分离声明、编译、串行执行和线程执行；第二条保留嵌套图及跨 recipe 依赖。
-在独立 Graph 仓库中去掉路径前缀并使用对应虚拟环境即可。
+在 Rivetoo 主仓库中运行时，给脚本路径加 `rivetoo-graph/` 前缀。
+这些命令测量当前 checkout；不会自动切换到表中的修改前版本。Rivetoo 日志接入测量
+依赖宿主工程，不是独立 Graph 安装的自带功能。
 
 ## 本轮未改的部分
 

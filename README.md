@@ -11,15 +11,34 @@ Python 导入入口为：
 from rivetoo_graph import Graph, GraphPlan, Step
 ```
 
-当前 `main` 分支正在把编译执行图迁移到 Rust；迁移前的纯 Python 基线保留在
-`python` 分支。Rust 架构与迁移边界见
+`main` 的声明编译、执行图校验和调度状态机由 Rust 实现；Python 保留声明 API、
+任意 callable 的执行与宿主集成。也可以挂载完整 Rust 原生子图，两类 action 共用
+执行图与并发预算。迁移前的纯 Python 基线保留在 `python` 分支，仅用于历史比较。
+当前边界见
 [Rust 架构](./docs/rust-architecture.md)。
 
-本地开发需要先把原生模块安装到当前 Python 环境：
+本地开发需要 Python 3.13 或更高版本、Rust 工具链和 maturin。
+激活虚拟环境后，把原生模块安装到该环境：
 
 ```bash
 maturin develop
 ```
+
+库没有纯 Python 执行兜底；原生扩展必须可用。
+
+## 简单示例
+
+```python
+from rivetoo_graph import GraphPlan, Step
+
+prepare = Step(lambda: print("prepare"), label="prepare")
+finish = Step(lambda: print("finish"), label="finish")
+graph = (prepare >> finish).graph()
+GraphPlan(label="example", graph=graph).run()
+```
+
+`>>` 声明先后依赖，`|` 组合无相互依赖的分支；实际并发度由执行选项控制。
+普通 action 失败只阻断相关下游，无关分支继续运行，最终汇总报告失败。
 
 完整的模型、组合与执行说明见 [Graph 文档](./docs/index.md)。
 

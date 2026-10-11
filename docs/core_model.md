@@ -27,16 +27,16 @@ GraphExecutionState
   - 构造时完成无环校验
   - 只有无环拓扑才能产生该类型
 
-这层不认识 `Step`、action、条件、capability 或运行状态。执行 `Graph` 会把所有
-真实阻塞关系投影为 `DirectedTopology[Step]`，再通过 `DAGTopology` 验证；
-`GraphCompilation` 同样在执行前验证最终 DAG。其它领域图也可以复用纯拓扑层，但保留
-自己的节点、边和方向语义。
+这层不认识 `Step`、action、条件、capability 或运行状态，是独立的 Python 通用拓扑 API。
+执行 `Graph` 的校验不经过它，而是将阻塞关系批量交给 Rust `dag_cycle`；Rust 编译器
+还会校验包含跨子图能力绑定的最终 DAG。两条路径的实现与复杂度见
+[拓扑复杂度](./topology_complexity.md)。
 
 ## `Graph`
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/model.py`
+- [src/rivetoo_graph/model.py](../src/rivetoo_graph/model.py)
 
 `Graph` 是声明态执行 DAG，包含：
 
@@ -56,15 +56,16 @@ GraphExecutionState
 - 嵌套图省略 label 时，使用承载它的 Step 的已解析 label
 - Graph 显式声明 label 时，该值优先
 
-图的依赖关系只保存在 `Graph.edges` 中。规范化后的 `Graph` 不接受
-`StepWiring`，也不会从 Step 读取第二份拓扑事实。
+显式接线只保存在 `Graph.edges` 中。规范化后的 `Graph` 不接受 `StepWiring`，
+Step 本身不保存 `after`。运行时条件的 `reads` 是另一类显式阻塞关系，同样参与
+校验与调度，不能忽略。
 
 ## `Step`
 
 `Step` 是声明态执行节点，包含：
 
 - `label: str | None`
-- `action: LeafAction | Graph`
+- `action: LeafAction | Graph | NativeGraph`
 - `when: StaticCondition | RuntimeCondition | None`
 
 `Step` 没有公开 `id`，也不保存 `after`。
@@ -75,16 +76,17 @@ compile_step = Step(lambda: compile_source(flags), label="compile")
 ```
 
 直接传入 callable 时，`Step` 会把它规范化为 `LeafAction`。Graph core 和
-runtime 最终只消费两种 action：
+runtime 消费三种 action：
 
 - `LeafAction`：执行叶子动作
-- `Graph`：保留显式子图边界
+- `Graph`：保留显式 Python 子图边界
+- `NativeGraph`：挂载完整 Rust 原生子图，内部 action 由 Rust 执行
 
 同名 label 合法。声明期的 Step 身份是对象本身，因此：
 
 - 同一个 Step 不能在同一张 Graph 中挂载两次
 - 同一个 Step 可以在不同 Graph 中使用不同接线
-- 跨图引用会在 Graph 构造时失败
+- 普通边与条件 `reads` 的跨图引用会在 Graph 构造时失败；跨子图同步使用能力端口
 
 ## 身份与展示
 
@@ -96,7 +98,7 @@ runtime 最终只消费两种 action：
 - `StepId`
   - Step 在一次具体挂载中的内部结构身份
   - 由挂载位置生成，例如 `0`、`1`、`1.0`
-  - 供 freeze、compiler、runtime 和结果存储使用
+  - 供 compiler、runtime 和结果存储使用
 - `Step.label`
   - 可选展示名
 - `Graph.label`
@@ -106,7 +108,7 @@ runtime 最终只消费两种 action：
 
 `GraphPlan.label`、`Graph.label` 和 `Step.label` 都不承担身份语义。
 
-未填写 Step label 时，freeze 阶段使用该挂载位置的 `StepId` 作为展示名。
+未填写 Step label 时，编译阶段使用该挂载位置的 `StepId` 作为展示名。
 因此匿名 lambda 可以保持无 label，不需要为了显示而伪造稳定身份。
 
 ## 拓扑与接线
@@ -191,6 +193,9 @@ graph = (
 - `A | B`：合并两侧步骤和边，不新增边
 - `A >> (B | C)`：fan-out
 - `(A | B) >> C`：fan-in
+
+这里的入口、出口是 wiring 的结构边界，不是 `CapabilityInterface` 的具名端口；
+`>>` 不会自动公开或绑定子图的能力接口。
 
 已有 Graph 作为 operand 时会被包装成一个 Step，不会自动展开：
 
@@ -289,7 +294,7 @@ Step(
 ## 运行时返回子图
 
 LeafAction 可以在运行时返回 Graph。runtime 会把返回值作为当前 Step 的显式子图
-冻结并执行：
+编译并在嵌套 execution session 中执行：
 
 ```python
 def select_graph(run_ctx: StepRunContext) -> Graph:
@@ -312,7 +317,7 @@ def select_graph(run_ctx: StepRunContext) -> Graph:
 条件值是和类型：
 
 - `StaticCondition`
-  - 在 freeze 阶段求值
+  - 在编译阶段求值
 - `RuntimeCondition`
   - 在 runtime 中求值
 
@@ -332,7 +337,7 @@ cache_miss = runtime_condition(
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/plan.py`
+- [src/rivetoo_graph/plan.py](../src/rivetoo_graph/plan.py)
 
 `GraphPlan` 把声明图绑定到一次执行：
 
@@ -375,7 +380,7 @@ plan = GraphPlan(
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/compile.py`
+- [src/rivetoo_graph/compile.py](../src/rivetoo_graph/compile.py)
 
 Rust 编译路径会把声明期已知子图转换为统一执行结构：
 
@@ -384,7 +389,9 @@ Rust 编译路径会把声明期已知子图转换为统一执行结构：
 - 把运行期条件和 capability binding 降级为执行依赖
 
 - `CompiledStep`
-  - 会提交给 worker 的叶子
+  - 由 Python driver 执行的 Python 叶子
+- `CompiledNativeStep`
+  - 由 Rust worker 执行的原生叶子，action 保留在 Rust
 - `CompiledComposite`
   - 子图边界的非执行生命周期投影
 - `roots`
@@ -405,7 +412,7 @@ Rust 编译路径会把声明期已知子图转换为统一执行结构：
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/results.py`
+- [src/rivetoo_graph/results.py](../src/rivetoo_graph/results.py)
 
 结果存储按 `StepId` 保存成功 Step 的返回值。声明 action 不直接使用 StepId，而是
 通过 Step 对象读取：
@@ -468,6 +475,7 @@ trace、timing 和展示，不修改执行结果，也不替代显式 Step。
 - 已执行和已完成的 StepId
 - 已进入和已完成的 composite
 - skip 状态
+- failed / blocked 状态与节点失败记录
 - runtime condition 结果
 - 可选 `GraphResultStore`
 

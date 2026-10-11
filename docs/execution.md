@@ -51,13 +51,13 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
   - step 级 runtime `when` 编译为 `CompiledRuntimeCondition`
   - 条件位于子图内部时，叶子仍然扁平化
   - 条件为假时节点进入 skipped 终态；条件依赖为假时只移除该依赖
-  - 每个 predicate 在一次 compiled run 中只求值一次
+  - 每个编译条件实例在当前 session 中最多求值一次；多个实例可以复用同一个 predicate
 
 ## 图渲染
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/render/`
+- [src/rivetoo_graph/render/](../src/rivetoo_graph/render/)
 
 当前渲染接口分两类：
 
@@ -82,7 +82,7 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/runtime/run.py`
+- [src/rivetoo_graph/runtime/run.py](../src/rivetoo_graph/runtime/run.py)
 
 当前运行选项拆成两类：
 
@@ -190,7 +190,7 @@ action 日志端口。需要日志或执行视图时，宿主必须显式传入�
 
 统一 runtime 在：
 
-- `rivetoo-graph/src/rivetoo_graph/runtime/`
+- [src/rivetoo_graph/runtime/](../src/rivetoo_graph/runtime/)
 
 当前执行规则：
 
@@ -199,21 +199,24 @@ action 日志端口。需要日志或执行视图时，宿主必须显式传入�
 3. 若图里有 `RuntimeCondition`：
    - 条件边按运行期结果判定依赖是否生效
    - `Step.when` 按运行期结果判定当前节点是否启用
-4. 若 `Step.when=False`：
-   - 该 step 直接视为不存在
-   - 不等待自己的 prerequisite
+4. 若 `Step.when` 的条件求值为假（`when` 不直接接受 bool）：
+   - 静态条件在编译时裁剪节点；运行时条件将节点标为 skipped
+   - 运行时仍须等待条件的 `reads`，但不等待其余 prerequisite
    - 不进入子图 action
 5. 声明期子图由 Rust 编译为 composite；运行期返回图重新进入同一编译器
 6. `ExecutionSession` 按 action 所有权分发叶子；Python action 批量返回 Python driver，
    `NativeGraph` 中的 Rust action 直接提交 Rust worker
-7. composite 只在协调线程维护生命周期，不提交给 worker，不写入 `executed_steps`
+7. composite 只在协调线程维护生命周期，不提交给 worker；compiled 模式不将其写入
+   `executed_steps`，dynamic 模式保留 composite 的兼容展示记录
 8. 条件边保留为 `CompiledConditionalDependency`，不生成伪造的 gate step
 9. `GraphExecutionState` 可显式 skip 某个 step path
 10. 若 skip 的是组合节点路径，compiled 模式下其所有后代路径也会一起跳过
 11. 若启用了结果模块，成功 step 会把结果写入 `GraphExecutionState.results`
-12. 每个运行时条件在一次 graph run 中只求值一次；其它依赖尚未完成时复用已判定结果
+12. 每个编译条件实例在当前 session 中最多求值一次；其它依赖尚未完成时复用已判定结果。
+    重用同一个 `RuntimeCondition` 对象并不保证跨使用位置合并求值
 13. 执行渲染读取记录下来的条件结果，不重新执行 predicate
-14. step 抛错即终止，不做 fallback
+14. 普通 action 失败阻断相关下游，无关分支继续，最终汇总抛错；没有 fallback 或自动重试。
+    显式取消、执行中断和基础设施错误的规则见上文“失败传播”
 
 `RuntimeCondition.reads` 虽然不是普通 Graph edge，但它会阻塞条件求值，因此参与
 `Graph` 和 `GraphCompilation` 的 DAG 环检测。读取依赖和边共同成环时，
@@ -233,7 +236,7 @@ action 日志端口。需要日志或执行视图时，宿主必须显式传入�
 当前模型刻意要求这些行为都留在声明层显式表达：
 
 - cache：显式 probe step / writeback step
-- log：声明层 action wrapper
+- log：显式接入 `GraphActionLog`，或在声明层组合 action wrapper
 - skip：由宿主显式写入 `GraphExecutionState`
 
 这样图本身就能直接表达：
@@ -250,14 +253,16 @@ action 日志端口。需要日志或执行视图时，宿主必须显式传入�
 
 `Graph` 在构造阶段就会校验：
 
-- graph label 非空
+- 显式提供的 graph label 非空；省略 label 合法
 - `steps` 只包含 Step
 - 同一个 Step 对象没有重复挂载
 - edge 的 source / target 都属于当前图
 - 无环
 
-Graph 会把显式边和运行时条件读取投影为 `DirectedTopology`，再通过
-`DAGTopology` 前置完成环检测；图一创建就失败，不等到执行期。
+Graph 将本层显式边和运行时条件读取投影为整数节点与阻塞边，批量交给 Rust
+`dag_cycle` 检查；不是调用 Python 的 `DirectedTopology` / `DAGTopology`。
+跨子图能力绑定在编译时 lower 后再做全局 DAG 校验，详见
+[拓扑复杂度](./topology_complexity.md)。
 
 ## 子图语义
 

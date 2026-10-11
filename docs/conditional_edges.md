@@ -11,12 +11,7 @@
 - Rust compiler 支持静态条件裁剪与运行时条件 lowering
 - Rust execution session 支持运行期条件批量求值
 
-但业务层目前还没有正式把现有图迁到条件边模型上。  
-这份文档描述的是：
-
-- 当前基础设施已经支持什么
-- 它为什么这样设计
-- 后续业务图真正接入时应如何理解这套模型
+本文只说明 Graph 的公开语义，不假设某个宿主业务是否采用条件边。
 
 ## 目标
 
@@ -55,7 +50,7 @@
 
 ## 为什么不继续只用 `skip_step(...)`
 
-当前系统里，很多“条件行为”还是靠：
+宿主也可以通过下面这些机制表达条件行为：
 
 - probe step
 - `skip_step(...)`
@@ -89,11 +84,11 @@
 
 实际处理顺序是：
 
-- 先 `freeze`
-  - 消掉 `StaticCondition`
-- 再由 compiler 内部 lowering
-  - 只处理当前编译作用域剩余的 `RuntimeCondition`
-- 最后进入 compiled graph
+- 声明编译时通过显式 evaluator 求值静态条件，裁剪无效关系
+- 将运行时条件 lower 为带 ConditionId 的 prerequisite
+- 进入统一 Rust execution session
+
+当前没有独立的公开 `freeze` API；静态裁剪在声明编译调用中完成。
 
 compiled graph 不再保留声明态 `ConditionalEdge`，而是把它归一化成
 `CompiledConditionalDependency`。条件 predicate 仍在运行期求值，但不会
@@ -108,7 +103,7 @@ compiled graph 不再保留声明态 `ConditionalEdge`，而是把它归一化�
 静态条件边表示：
 
 - 这条依赖能不能成立
-- 在 freeze / compile 前就已经知道
+- 在声明编译前就已经知道
 
 例如：
 
@@ -120,9 +115,7 @@ compiled graph 不再保留声明态 `ConditionalEdge`，而是把它归一化�
 
 ### 当前静态条件模型
 
-位置：
-
-- `rivetoo-graph/src/rivetoo_graph/static_condition.py`
+位置：[static_condition.py](../src/rivetoo_graph/static_condition.py)
 
 graph core 现在只要求静态条件是显式数据：
 
@@ -149,7 +142,7 @@ graph core 不再内建：
 ### 静态条件怎么求值
 
 graph core 也不解释 `payload` 的业务语义。  
-freeze 阶段统一委托给：
+编译阶段统一委托给：
 
 - `static_condition_eval`
 
@@ -173,8 +166,8 @@ freeze 阶段统一委托给：
 
 - graph core 负责：
   - 遍历图
-  - 管 freeze 过程
-  - 管结构替换
+  - 管声明编译过程
+  - 生成新的编译结构，不修改原始声明图
 - 上层业务负责：
   - 定义静态条件 payload
   - 定义静态条件求值逻辑
@@ -190,7 +183,7 @@ freeze 阶段统一委托给：
 - 如果只是局部、轻量的静态条件求值，也可以直接传函数
 
 具体宿主可以在 Graph core 之外定义自己的静态条件 payload 和 evaluator。Graph
-只保存不透明 payload，并在 freeze 时调用显式传入的求值入口。
+只保存不透明 payload，并在声明编译时调用显式传入的求值入口。
 
 而这几种组合能力现在属于 graph 自身的静态条件基础能力：
 
@@ -213,19 +206,21 @@ freeze 阶段统一委托给：
 也就是说，下面这种写法本身并不会让静态条件“自动可用”：
 
 ```python
-condition=all_(
-    target_os(PlatformOS.ANDROID),
-    linkage("shared"),
+condition = all_(
+    StaticCondition(payload="android", description="target OS is Android"),
+    StaticCondition(payload="shared", description="shared linkage"),
 )
 ```
 
-如果图上用了这类静态条件，而 `Graph.static_condition_eval` 为空，freeze 会直接报错。
+上例字符串是宿主自己约定的 payload，Graph 不解释它们。
+如果图上用了这类静态条件，而 `Graph.static_condition_eval` 为空，声明编译会直接报错。
 
 ### 静态条件边的例子
 
 假设：
 
-- 只有 Android 才需要 `write_android_env_shim`
+- `archive` 只有在 Android 上才需要等待 `write_android_env_shim`
+- 此例故意只控制依赖边；来源 Step 本身始终启用
 
 高层图可以写成：
 
@@ -255,7 +250,7 @@ graph = Graph.from_wiring(
 )
 ```
 
-如果 evaluator 判定当前 target 是 Android，freeze 后就变成普通边：
+如果 evaluator 判定当前 target 是 Android，编译后就变成普通边：
 
 ```mermaid
 graph TD
@@ -267,10 +262,11 @@ graph TD
   S --> A
 ```
 
-如果当前 target 不是 Android，freeze 后就是：
+如果当前 target 不是 Android，编译后就是：
 
 ```mermaid
 graph TD
+  S["write_android_env_shim（仍执行，但 archive 不等待它）"]
   B["build"]
   A["archive"]
 
@@ -280,7 +276,9 @@ graph TD
 注意：
 
 - 静态条件边不会进入 compiled graph
-- 它在 freeze 后就已经消失了
+- 条件为真则变成普通依赖，为假则移除这条边
+- 边为假不删除来源 Step；要让来源 Step 也不运行，应给它声明 `Step.when`
+- 上例中的 payload、evaluator 和领域辅助函数由宿主提供，不是 Graph 的内置平台 API
 
 ## 运行期条件边
 
@@ -295,13 +293,13 @@ graph TD
 - 某个前置 step 实际输出
 - 某个运行期检测结果
 
-这类条件需要读取 step result，因此不能在 freeze 阶段直接消掉。
+这类条件需要读取 step result，因此不能在声明编译阶段直接消掉。
 
 ### 当前运行期条件模型
 
 位置：
 
-- `rivetoo-graph/src/rivetoo_graph/model.py`
+- [src/rivetoo_graph/model.py](../src/rivetoo_graph/model.py)
 
 当前模型是：
 
@@ -319,9 +317,10 @@ class RuntimeCondition:
 - `reads`
   - 这条条件在求值前，还要先读取哪些 step 的结果
 
-一条运行时条件边在一次 graph run 中只判定一次。若条件为真但它指向的
+一条运行时条件边的编译实例在当前 session 中最多判定一次。若条件为真但它指向的
 原始前置 step 尚未完成，后续调度刷新只等待该前置 step，不会再次调用
-predicate。
+predicate。该缓存属于编译后的条件实例；把同一个 `RuntimeCondition` 或 predicate
+用于多个位置，不代表跨位置只求值一次。
 
 ### `reads` 为什么不是普通 `after`
 
@@ -482,19 +481,19 @@ graph TD
 只会看到：
 
 - 普通边
-- `RuntimeCondition`
+- ConditionId、reads 和已编译的条件依赖；Python predicate 保存在 adapter 侧表
 
 它不会再看到：
 
 - `StaticCondition`
 
-如果还能看到，说明 freeze 没做对，是 bug。
+静态条件在声明编译阶段完成，不进入 runtime 求值协议。
 
 因此，runtime 的正式边界是：
 
 - 它只处理：
   - 普通边
-  - `RuntimeCondition`
+  - 编译后的运行时条件引用
 - 它不处理：
   - `StaticCondition`
 
@@ -547,7 +546,7 @@ metadata 解释一个编译器伪造的 step。
 - 高层统一 `ConditionalEdge`
 - `StaticCondition`
 - `RuntimeCondition`
-- `freeze`
+- 声明编译与静态裁剪
 - compiled lowering
 
 Graph core 只定义条件结构、求值时机和调度语义。宿主负责决定哪些领域关系适合
