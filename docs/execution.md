@@ -223,7 +223,7 @@ Thread options run synchronous Python calls directly in workers and bridge
 awaitables with asyncio.run. Async options await async work and use
 asyncio.to_thread for synchronous calls. Native actions run in controlled Rust
 workers without blocking the async event loop. Both language branches share one
-session's total capacity. ContextVar isolates component logs per task.
+session's total capacity. ContextVar isolates action log scopes per task.
 
 Only ready nodes are dispatched. Ordinary failures stop dependent work, while
 unrelated ready nodes continue. Explicit cancellation stops new dispatch.

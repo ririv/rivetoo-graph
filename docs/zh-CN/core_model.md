@@ -438,7 +438,7 @@ ParentGraphStepRef(
 
 - `view: StepReadContext`
 - `control: StepControl`
-- `component_log_path`
+- `step_log_path`
 
 常用只读 API：
 
@@ -454,11 +454,17 @@ ParentGraphStepRef(
 - `skip_step(step_id)`
 - `skip_steps(step_ids)`
 
-component log 在执行前通过 `GraphExecution.bind_component_log_path(step, path)` 绑定；需要绑定
-多个 component 时使用 `bind_component_log_paths(...)`，它只建立一次静态挂载索引，避免
-为每个 component 重复遍历整张图。
-静态子图和 action 动态返回的子图都会继承所属 component 的日志路径；action 不提供
-运行时覆盖入口。
+日志路径在构造执行对象时声明：
+
+```python
+execution = GraphExecution(graph=graph, step_log_paths={step: log_path})
+```
+
+构造器对完整图一次性解析全部 Step 引用并保存路径快照；每个引用必须对应唯一的挂载
+位置，不再提供构造后的绑定 API。V 个挂载步骤、K 个绑定的处理时间和空间均为
+O(V + K)；没有绑定时不遍历图。
+叶子动作直接使用自己的绑定；未声明时沿用最近的已绑定祖先路径。静态子图和 action
+动态返回的子图也沿用所属步骤的路径；action 不提供运行时修改绑定的入口。
 
 ## Observation 与执行状态
 

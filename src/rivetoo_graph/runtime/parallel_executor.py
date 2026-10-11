@@ -74,11 +74,11 @@ class ParallelGraphExecutor:
         compilation: GraphCompilation,
         *,
         workers: int,
-        component_log_path: Path | None = None,
+        step_log_path: Path | None = None,
     ) -> None:
         run = CompiledGraphRun(
             compilation=compilation,
-            component_log_path=component_log_path,
+            step_log_path=step_log_path,
         )
         emit_graph_observation(
             observer=self.observer,
@@ -134,7 +134,7 @@ class ParallelGraphExecutor:
         thread.name = step_thread_name(label_path)
         self.state.record_step(step.id, label_path)
         run_ctx: StepRunContext | None = None
-        component_log_path = run.component_log_path_for(self.state, step)
+        step_log_path = run.step_log_path_for(self.state, step)
         try:
             action = step.action
             runtime_step = RuntimeStep(
@@ -152,17 +152,13 @@ class ParallelGraphExecutor:
                 result = action.invoke(run_ctx)
                 return resolve_action_result(result)
 
-            if run_ctx.component_log_path is None:
+            if run_ctx.step_log_path is None:
                 value = _invoke()
             else:
-                with self.action_log.scope(run_ctx.component_log_path):
+                with self.action_log.scope(run_ctx.step_log_path):
                     value = _invoke()
             nested_graph = as_graph_result(value)
             if nested_graph is not None:
-                nested_component_log_path = (
-                    self.state.get_component_log_path(step.id)
-                    or run_ctx.component_log_path
-                )
                 self._execute_compilation(
                     compile_graph(
                         nested_graph,
@@ -178,7 +174,7 @@ class ParallelGraphExecutor:
                         ),
                     ),
                     workers=workers,
-                    component_log_path=nested_component_log_path,
+                    step_log_path=run_ctx.step_log_path,
                 )
                 self.state.record_result(step.id, None)
                 self.state.complete_step(step.id)
@@ -186,9 +182,9 @@ class ParallelGraphExecutor:
             self.state.record_result(step.id, value)
             self.state.complete_step(step.id)
         except Exception:
-            if component_log_path is not None:
+            if step_log_path is not None:
                 self.action_log.append(
-                    component_log_path,
+                    step_log_path,
                     "===== ACTION EXCEPTION =====\n"
                     f"{traceback.format_exc()}"
                     "===== END ACTION EXCEPTION =====\n",

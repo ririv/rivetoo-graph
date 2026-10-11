@@ -286,7 +286,7 @@ Rust compiler 会转换所有声明期已知子图：
 - `AsyncGraphRunOptions(concurrency=...)`
   - 异步 step 直接 await，同步 step 通过 `asyncio.to_thread(...)` 桥接
   - Rust action 同样通过受控 worker 执行，不阻塞 asyncio event loop
-  - 同步和异步 action 的 component log 都通过 `ContextVar` 保持任务级隔离
+  - 同步和异步 action 的日志作用域都通过 `ContextVar` 保持任务级隔离
 
 并发语义：
 

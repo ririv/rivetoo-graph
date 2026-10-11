@@ -55,9 +55,9 @@ async def _invoke_async_step_action(
             return await cast("Awaitable[object]", result)
         return result
 
-    if run_ctx.component_log_path is None:
+    if run_ctx.step_log_path is None:
         return await _invoke()
-    with action_log.scope(run_ctx.component_log_path):
+    with action_log.scope(run_ctx.step_log_path):
         return await _invoke()
 
 
@@ -106,11 +106,11 @@ class AsyncGraphExecutor:
         compilation: GraphCompilation,
         *,
         concurrency: int,
-        component_log_path: Path | None = None,
+        step_log_path: Path | None = None,
     ) -> None:
         run = CompiledGraphRun(
             compilation=compilation,
-            component_log_path=component_log_path,
+            step_log_path=step_log_path,
         )
         emit_graph_observation(
             observer=self.observer,
@@ -188,9 +188,6 @@ class AsyncGraphExecutor:
         )
         nested_graph = as_graph_result(value)
         if nested_graph is not None:
-            nested_component_log_path = (
-                self.state.get_component_log_path(step.id) or run_ctx.component_log_path
-            )
             await self._execute_compilation(
                 compile_graph(
                     nested_graph,
@@ -206,7 +203,7 @@ class AsyncGraphExecutor:
                     ),
                 ),
                 concurrency=concurrency,
-                component_log_path=nested_component_log_path,
+                step_log_path=run_ctx.step_log_path,
             )
             self.state.record_result(step.id, None)
             self.state.complete_step(step.id)

@@ -190,30 +190,32 @@ def test_native_action_writes_to_bound_component_log(tmp_path: Path) -> None:
         label="native",
     )
     component = Graph(label="component", steps=(native,)).step()
-    plan = GraphExecution(graph=Graph(steps=(component,), label="native-log"))
-    plan.bind_component_log_path(component, log_path)
+    plan = GraphExecution(
+        graph=Graph(steps=(component,), label="native-log"),
+        step_log_paths={component: log_path},
+    )
 
     plan.run()
 
     assert log_path.read_text().splitlines() == ["native stdout", "native stderr"]
 
 
-def test_bind_component_log_paths_resolves_one_batch(tmp_path: Path) -> None:
+def test_step_log_paths_resolve_at_construction(tmp_path: Path) -> None:
     first = Step(lambda: None, label="first")
     second = Step(lambda: None, label="second")
-    plan = GraphExecution(graph=Graph(steps=(first, second), label="logs"))
     first_log = tmp_path / "first.log"
     second_log = tmp_path / "second.log"
 
-    plan.bind_component_log_paths(
-        {
+    plan = GraphExecution(
+        graph=Graph(steps=(first, second), label="logs"),
+        step_log_paths={
             first: first_log,
             second: second_log,
-        }
+        },
     )
 
-    assert plan.execution_state.get_component_log_path(StepId((0,))) == first_log
-    assert plan.execution_state.get_component_log_path(StepId((1,))) == second_log
+    assert plan.execution_state.get_step_log_path(StepId((0,))) == first_log
+    assert plan.execution_state.get_step_log_path(StepId((1,))) == second_log
 
 
 def test_native_action_failure_is_a_graph_action_failure() -> None:
@@ -1409,12 +1411,12 @@ def test_async_executor_runs_independent_sync_steps_concurrently(
         AsyncGraphRunOptions(concurrency=1),
     ],
 )
-def test_returned_graph_inherits_component_log_path(
+def test_returned_graph_inherits_step_log_path(
     tmp_path: Path,
     mode: GraphMode,
     options: ThreadGraphRunOptions | AsyncGraphRunOptions,
 ) -> None:
-    component_log_path = tmp_path / "component.log"
+    step_log_path = tmp_path / "component.log"
     observed_paths: list[Path | None] = []
     action_log = _RecordingActionLog()
 
@@ -1436,11 +1438,11 @@ def test_returned_graph_inherits_component_log_path(
             wiring=(component.wire(),),
         ),
         action_log=action_log,
+        step_log_paths={component: step_log_path},
     )
-    plan.bind_component_log_path(component, component_log_path)
     plan.run(options=options, mode=mode)
 
-    assert observed_paths == [component_log_path]
+    assert observed_paths == [step_log_path]
 
 
 @pytest.mark.parametrize("mode", ["dynamic", "compiled"])
@@ -1448,7 +1450,7 @@ def test_static_component_graph_inherits_bound_log_path(
     tmp_path: Path,
     mode: GraphMode,
 ) -> None:
-    component_log_path = tmp_path / "component.log"
+    step_log_path = tmp_path / "component.log"
     observed_paths: list[Path | None] = []
     action_log = _RecordingActionLog()
     component = Step(
@@ -1469,12 +1471,12 @@ def test_static_component_graph_inherits_bound_log_path(
             wiring=(component.wire(),),
         ),
         action_log=action_log,
+        step_log_paths={component: step_log_path},
     )
 
-    plan.bind_component_log_path(component, component_log_path)
     plan.run(mode=mode)
 
-    assert observed_paths == [component_log_path]
+    assert observed_paths == [step_log_path]
 
 
 @pytest.mark.parametrize("mode", ["dynamic", "compiled"])

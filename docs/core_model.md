@@ -314,16 +314,24 @@ ParentGraphStepRef(step=outer_prepare, levels_up=1)
 There are no string references or implicit searches for the nearest ancestor.
 
 StepRunContext combines `view: StepReadContext`, `control: StepControl`, and
-`component_log_path`. Read APIs include `result/require_result`,
+`step_log_path`. Read APIs include `result/require_result`,
 `value/require_value`, `has_result`, `step_id`, `label_path`, and
 `graph_label_path`. Side-effectful skipping goes through
 `run_ctx.control.skip_step(step_id)` or `skip_steps(step_ids)`.
 
-Bind component logs before execution with
-`GraphExecution.bind_component_log_path(step, path)`. For multiple components,
-`bind_component_log_paths(...)` builds one mounting index instead of traversing
-the graph repeatedly. Static and runtime-returned subgraphs inherit that log path;
-actions cannot override it at runtime.
+Bind logs when constructing the execution:
+
+```python
+execution = GraphExecution(graph=graph, step_log_paths={step: log_path})
+```
+
+The constructor resolves all Step references against the complete graph in one
+batch and snapshots the paths. A reference must identify exactly one mounted
+Step. There is no post-construction binding API. Resolving V mounted steps and K
+bindings takes O(V + K) time and O(V + K) space; an empty mapping needs no traversal.
+A leaf action uses its own binding. Without one, it inherits the nearest bound
+ancestor's path. Static and runtime-returned subgraphs also inherit the path;
+actions cannot change the bindings at runtime.
 
 ## Observation and state
 

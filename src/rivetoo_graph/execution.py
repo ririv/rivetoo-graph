@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING
 
 from .compile import (
@@ -53,6 +53,22 @@ class GraphExecution:
     )
     action_log: GraphActionLog = NO_GRAPH_ACTION_LOG
     execution_output: GraphExecutionOutput = NO_GRAPH_EXECUTION_OUTPUT
+    step_log_paths: InitVar[Mapping[Step, Path] | None] = field(
+        default=None, kw_only=True
+    )
+
+    def __post_init__(self, step_log_paths: Mapping[Step, Path] | None) -> None:
+        if not step_log_paths:
+            return
+        mounted_step_ids = self._index_mounted_step_ids()
+        # 先完整校验再写入状态，避免某个引用无效时只绑定了一部分日志。
+        resolved = {
+            self._require_unique_mounted_step_id(
+                step, mounted_step_ids=mounted_step_ids
+            ): path
+            for step, path in step_log_paths.items()
+        }
+        self.execution_state._initialize_step_log_paths(resolved)
 
     def compile(self) -> GraphCompilation:
         return compile_graph(self.graph, root_label=self.graph.display_label)
@@ -64,24 +80,6 @@ class GraphExecution:
         if results is None:
             raise RuntimeError("graph execution did not enable graph results")
         return results.require(self._require_unique_mounted_step_id(step))
-
-    def bind_component_log_path(self, step: Step, path: Path) -> None:
-        """把一次挂载中的 component step 绑定到独立日志文件。"""
-
-        self.bind_component_log_paths({step: path})
-
-    def bind_component_log_paths(self, bindings: Mapping[Step, Path]) -> None:
-        """一次解析挂载身份并绑定一组 component 日志路径。"""
-
-        if not bindings:
-            return
-        mounted_step_ids = self._index_mounted_step_ids()
-        for step, path in bindings.items():
-            step_id = self._require_unique_mounted_step_id(
-                step,
-                mounted_step_ids=mounted_step_ids,
-            )
-            self.execution_state.set_component_log_path(step_id, path)
 
     def _require_unique_mounted_step_id(
         self,

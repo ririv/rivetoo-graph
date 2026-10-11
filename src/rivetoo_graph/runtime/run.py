@@ -63,7 +63,7 @@ class CompiledGraphRun:
     """
 
     compilation: GraphCompilation
-    component_log_path: Path | None = None
+    step_log_path: Path | None = None
 
     @property
     def label(self) -> str:
@@ -92,7 +92,7 @@ class CompiledGraphRun:
     ) -> StepRunContext:
         step = runtime_step.step
         context = step.context
-        component_log_path = self.component_log_path_for(state, step)
+        step_log_path = self.step_log_path_for(state, step)
         return StepRunContext(
             view=StepReadContext(
                 step_id=step.id,
@@ -105,24 +105,27 @@ class CompiledGraphRun:
                 step_id=step.id,
                 _state=state,
             ),
-            component_log_path=component_log_path,
+            step_log_path=step_log_path,
         )
 
-    def component_log_path_for(
+    def step_log_path_for(
         self,
         state: GraphExecutionState,
         step: CompiledStep | CompiledNativeStep,
     ) -> Path | None:
-        """Resolve one step's inherited component log path without creating a run context."""
+        """Resolve a step's explicit or inherited log path without creating a run context."""
 
         context = step.context
-        component_log_path = self.component_log_path
+        step_log_path = state.get_step_log_path(step.id)
+        if step_log_path is not None:
+            return step_log_path
+        step_log_path = self.step_log_path
         for composite_id in context.ancestor_composite_ids:
-            bound_path = state.get_component_log_path(composite_id)
+            bound_path = state.get_step_log_path(composite_id)
             if bound_path is not None:
-                component_log_path = bound_path
+                step_log_path = bound_path
                 break
-        return component_log_path
+        return step_log_path
 
     def native_action_contexts(
         self,
@@ -134,11 +137,11 @@ class CompiledGraphRun:
         for node, compiled_node in enumerate(self.compilation._native_nodes):
             if not isinstance(compiled_node, CompiledNativeStep):
                 continue
-            component_log_path = self.component_log_path_for(state, compiled_node)
+            step_log_path = self.step_log_path_for(state, compiled_node)
             contexts.append(
                 (
                     node,
-                    None if component_log_path is None else str(component_log_path),
+                    None if step_log_path is None else str(step_log_path),
                 )
             )
         return contexts

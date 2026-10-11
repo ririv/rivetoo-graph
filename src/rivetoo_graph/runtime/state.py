@@ -3,10 +3,11 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
     from pathlib import Path
 
     from ..model import StepId, StepLabelPath
@@ -42,7 +43,7 @@ class GraphExecutionState:
     _completed_composites: set[StepId]
     _step_label_paths: dict[StepId, StepLabelPath]
     results: GraphResultStore | None
-    _component_log_paths: dict[StepId, Path]
+    _step_log_paths: Mapping[StepId, Path]
     _runtime_condition_values: dict[StepId, bool]
     _node_failures: dict[StepId, GraphNodeFailure]
     _lock: threading.Lock
@@ -63,7 +64,7 @@ class GraphExecutionState:
         self._completed_composites = set()
         self._step_label_paths = {}
         self.results = results
-        self._component_log_paths = {}
+        self._step_log_paths = MappingProxyType({})
         self._runtime_condition_values = {}
         self._node_failures = {}
         self._lock = threading.Lock()
@@ -279,13 +280,21 @@ class GraphExecutionState:
                 )
             self._runtime_condition_values[step_id] = value
 
-    def set_component_log_path(self, step_id: StepId, value: Path) -> None:
-        with self._lock:
-            self._component_log_paths[step_id] = value
+    def _initialize_step_log_paths(self, paths: Mapping[StepId, Path]) -> None:
+        """构造执行对象时一次性保存日志绑定；执行期间不允许修改。"""
 
-    def get_component_log_path(self, step_id: StepId) -> Path | None:
         with self._lock:
-            return self._component_log_paths.get(step_id)
+            if self._started:
+                raise RuntimeError(
+                    "cannot configure step logs after execution has started"
+                )
+            if self._step_log_paths:
+                raise RuntimeError("step log paths are already configured")
+            self._step_log_paths = MappingProxyType(dict(paths))
+
+    def get_step_log_path(self, step_id: StepId) -> Path | None:
+        with self._lock:
+            return self._step_log_paths.get(step_id)
 
 
 @dataclass(frozen=True, slots=True)

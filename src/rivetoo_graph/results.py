@@ -153,7 +153,7 @@ class StepRunContext:
     # action 的统一运行时入口；只读数据和副作用控制显式分离。
     view: StepReadContext
     control: StepControl
-    component_log_path: Path | None
+    step_log_path: Path | None
 
     def result(self, ref: StepResultRef) -> StepResult | None:
         return self.view.result(ref)

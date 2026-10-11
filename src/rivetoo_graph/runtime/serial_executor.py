@@ -39,9 +39,9 @@ def _invoke_serial_python_action(
         result = action.invoke(run_ctx)
         return resolve_action_result(result)
 
-    if run_ctx.component_log_path is None:
+    if run_ctx.step_log_path is None:
         return _invoke()
-    with action_log.scope(run_ctx.component_log_path):
+    with action_log.scope(run_ctx.step_log_path):
         return _invoke()
 
 
@@ -74,11 +74,11 @@ class SerialGraphExecutor:
         self,
         compilation: GraphCompilation,
         *,
-        component_log_path: Path | None = None,
+        step_log_path: Path | None = None,
     ) -> None:
         run = CompiledGraphRun(
             compilation=compilation,
-            component_log_path=component_log_path,
+            step_log_path=step_log_path,
         )
         emit_graph_observation(
             observer=self.observer,
@@ -118,7 +118,7 @@ class SerialGraphExecutor:
     ) -> None:
         label_path = step.context.label_path
         self.state.record_step(step.id, label_path)
-        component_log_path = run.component_log_path_for(self.state, step)
+        step_log_path = run.step_log_path_for(self.state, step)
         action = step.action
         runtime_step = RuntimeStep(
             step=step,
@@ -134,9 +134,6 @@ class SerialGraphExecutor:
         )
         nested_graph = as_graph_result(value)
         if nested_graph is not None:
-            nested_component_log_path = (
-                self.state.get_component_log_path(step.id) or component_log_path
-            )
             self._execute_compilation(
                 compile_graph(
                     nested_graph,
@@ -151,7 +148,7 @@ class SerialGraphExecutor:
                         *step.context.ancestor_graph_scopes,
                     ),
                 ),
-                component_log_path=nested_component_log_path,
+                step_log_path=step_log_path,
             )
             self.state.record_result(step.id, None)
         else:
