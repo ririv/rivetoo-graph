@@ -8,8 +8,8 @@ from .mermaid import render_graph_mermaid
 from .tree import render_graph
 
 if TYPE_CHECKING:
+    from ..execution import GraphExecution
     from ..model import GraphMode
-    from ..plan import GraphPlan
 
 type GraphRenderFormat = Literal["tree", "mermaid"]
 
@@ -20,22 +20,22 @@ class GraphRenderOptions:
     fmt: GraphRenderFormat = "tree"
 
 
-def render_graph_plan(
-    graph_plan: GraphPlan,
+def render_execution_structure(
+    graph_execution: GraphExecution,
     *,
     options: GraphRenderOptions,
 ) -> str:
     match options.fmt:
         case "tree":
             return render_graph(
-                graph_plan.graph,
-                root_label=graph_plan.graph.display_label,
+                graph_execution.graph,
+                root_label=graph_execution.graph.display_label,
                 mode=options.mode,
             )
         case "mermaid":
             return render_graph_mermaid(
-                graph_plan.graph,
-                root_label=graph_plan.graph.display_label,
+                graph_execution.graph,
+                root_label=graph_execution.graph.display_label,
                 mode=options.mode,
             )
         case _:

@@ -249,13 +249,13 @@ cache_miss = runtime_condition(
 wiring-boundary calculation once both endpoints are present, even though it is
 not an ordinary prerequisite.
 
-## GraphPlan
+## GraphExecution
 
-Defined in [plan.py](../src/rivetoo_graph/plan.py), GraphPlan binds a declaration to
+Defined in [execution.py](../src/rivetoo_graph/execution.py), GraphExecution binds a declaration to
 one execution:
 
 ```python
-plan = GraphPlan(
+execution = GraphExecution(
     graph=graph,
     execution_state=GraphExecutionState(),
     execution_control=GraphExecutionControl(),
@@ -269,13 +269,13 @@ and `require_result(step)`.
 The graph's name is declared only through `Graph.label`. Compilation, rendering,
 and execution output all use `graph.display_label`: the declared name, or
 `<unlabeled>` for an anonymous graph. This display value is not an identity;
-scheduling and result lookup use `StepId`. GraphPlan does not rename the graph.
+scheduling and result lookup use `StepId`. GraphExecution does not rename the graph.
 
 State is single-use. Control is independent by default; a host can explicitly
-share one control between sequential plans to share cancellation, not results.
+share one control between sequential executions to share cancellation, not results.
 Once stopped, control cannot be reset.
 
-GraphPlan does not read global host logging or stop state. By default it neither
+GraphExecution does not read global host logging or stop state. By default it neither
 connects a host action logger nor writes an execution file. For file output,
 explicitly pass `TreeFileExecutionOutput(output_dir)`.
 
@@ -320,7 +320,7 @@ StepRunContext combines `view: StepReadContext`, `control: StepControl`, and
 `run_ctx.control.skip_step(step_id)` or `skip_steps(step_ids)`.
 
 Bind component logs before execution with
-`GraphPlan.bind_component_log_path(step, path)`. For multiple components,
+`GraphExecution.bind_component_log_path(step, path)`. For multiple components,
 `bind_component_log_paths(...)` builds one mounting index instead of traversing
 the graph repeatedly. Static and runtime-returned subgraphs inherit that log path;
 actions cannot override it at runtime.

@@ -19,7 +19,7 @@
 Python 导入入口为：
 
 ```python
-from rivetoo_graph import Graph, GraphPlan, Step
+from rivetoo_graph import Graph, GraphExecution, Step
 ```
 
 `main` 的声明编译、执行图校验和调度状态机由 Rust 实现；Python 保留声明 API、
@@ -39,7 +39,7 @@ maturin develop
 ## 简单示例
 
 ```python
-from rivetoo_graph import GraphPlan, Step, ThreadGraphRunOptions
+from rivetoo_graph import GraphExecution, Step, ThreadGraphRunOptions
 
 prepare = Step(lambda: print("prepare"), label="prepare")
 validate = Step(lambda: print("validate"), label="validate")
@@ -48,7 +48,7 @@ finish = Step(lambda: print("finish"), label="finish")
 
 checks = (validate | test).graph(label="checks")
 graph = (prepare >> checks >> finish).graph(label="example")
-GraphPlan(graph=graph).run(ThreadGraphRunOptions(workers=2))
+GraphExecution(graph=graph).run(ThreadGraphRunOptions(workers=2))
 ```
 
 `prepare` 完成后，`checks` 子图中的 `validate` 和 `test` 可以并发执行。

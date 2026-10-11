@@ -333,16 +333,16 @@ cache_miss = runtime_condition(
 `reads` 不是普通 prerequisite，但会阻塞条件求值，因此与 Graph edges 一起参与环检测，
 并在引用两端均已进入当前 wiring 后参与入口和出口计算。
 
-## `GraphPlan`
+## `GraphExecution`
 
 位置：
 
-- [src/rivetoo_graph/plan.py](../../src/rivetoo_graph/plan.py)
+- [src/rivetoo_graph/execution.py](../../src/rivetoo_graph/execution.py)
 
-`GraphPlan` 把声明图绑定到一次执行：
+`GraphExecution` 把声明图绑定到一次执行：
 
 ```python
-plan = GraphPlan(
+execution = GraphExecution(
     graph=graph,
     execution_state=GraphExecutionState(),
     execution_control=GraphExecutionControl(),
@@ -365,14 +365,14 @@ plan = GraphPlan(
 
 图名只在 `Graph.label` 声明。编译、渲染和执行输出统一读取 `graph.display_label`：
 有名字时使用声明值，匿名图显示为 `<unlabeled>`。这个展示值不是身份，调度和结果
-定位继续使用 `StepId`；GraphPlan 不再为图另外起名。
+定位继续使用 `StepId`；GraphExecution 不再为图另外起名。
 
-`GraphExecutionState` 只属于当前 Plan 的一次运行。`GraphExecutionControl`
-默认同样由 Plan 独享；宿主若需要把多个顺序 Plan 归入同一次停止控制，可以显式
+`GraphExecutionState` 只属于当前 GraphExecution 的一次运行。`GraphExecutionControl`
+默认同样由 GraphExecution 独享；宿主若需要把多个顺序 GraphExecution 归入同一次停止控制，可以显式
 把同一实例传给它们，但不会因此合并两份执行结果。control 收到停止请求后不可
 恢复；需要新的执行作用域时必须创建新实例。
 
-`GraphPlan` 本身不读取宿主的全局日志目录、日志上下文或停止状态。独立使用时，
+`GraphExecution` 本身不读取宿主的全局日志目录、日志上下文或停止状态。独立使用时，
 `action_log` 不接入宿主日志设施，`execution_output` 也不写外部文件；需要文件输出时，
 宿主显式传入 Graph 提供的 `TreeFileExecutionOutput(output_dir)`。
 
@@ -454,7 +454,7 @@ ParentGraphStepRef(
 - `skip_step(step_id)`
 - `skip_steps(step_ids)`
 
-component log 在执行前通过 `GraphPlan.bind_component_log_path(step, path)` 绑定；需要绑定
+component log 在执行前通过 `GraphExecution.bind_component_log_path(step, path)` 绑定；需要绑定
 多个 component 时使用 `bind_component_log_paths(...)`，它只建立一次静态挂载索引，避免
 为每个 component 重复遍历整张图。
 静态子图和 action 动态返回的子图都会继承所属 component 的日志路径；action 不提供

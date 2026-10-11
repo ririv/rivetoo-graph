@@ -5,7 +5,7 @@
 `rivetoo-graph` 是一个显式、可组合的 Python DAG 声明与执行库。Python 导入入口为：
 
 ```python
-from rivetoo_graph import Graph, GraphPlan, Step
+from rivetoo_graph import Graph, GraphExecution, Step
 ```
 
 库本身提供：
@@ -22,7 +22,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 
 ## 设计目标
 
-- `Graph` 只表达声明结构，单次执行状态由 `GraphPlan` 持有
+- `Graph` 只表达声明结构，单次执行状态由 `GraphExecution` 持有
 - 声明期直接引用 Step 对象，挂载后才分配内部 `StepId`
 - 依赖、条件读取和能力绑定全部显式参与拓扑校验
 - 子图可以组合，但不会被声明 DSL 隐式展开
@@ -51,7 +51,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 
 - `Graph`
   - 声明态 DAG 结构
-- `GraphPlan`
+- `GraphExecution`
   - 声明图与一次执行作用域
 - `Step`
   - 可选展示 label、条件，以及 Python action、Python 子图或完整 Rust 原生子图

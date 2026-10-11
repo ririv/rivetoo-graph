@@ -15,8 +15,8 @@ class GraphExecutionStopped(RuntimeError):
 class GraphExecutionControl:
     """协调一组 Graph 执行及其宿主资源的停止状态。
 
-    `GraphPlan` 默认创建独享实例；宿主若把多个顺序 Plan 视为同一次请求，
-    可以显式传入同一实例。执行结果仍分别保存在各 Plan 的
+    `GraphExecution` 默认创建独享实例；宿主若把多个顺序 GraphExecution 视为同一次请求，
+    可以显式传入同一实例。执行结果仍分别保存在各 GraphExecution 的
     `GraphExecutionState` 中，不进入本对象。
     """
 

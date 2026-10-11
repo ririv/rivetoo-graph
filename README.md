@@ -43,7 +43,7 @@ The native extension is required. There is no pure-Python execution fallback.
 ## Quick example
 
 ```python
-from rivetoo_graph import GraphPlan, Step, ThreadGraphRunOptions
+from rivetoo_graph import GraphExecution, Step, ThreadGraphRunOptions
 
 prepare = Step(lambda: print("prepare"), label="prepare")
 validate = Step(lambda: print("validate"), label="validate")
@@ -52,7 +52,7 @@ finish = Step(lambda: print("finish"), label="finish")
 
 checks = (validate | test).graph(label="checks")
 graph = (prepare >> checks >> finish).graph(label="example")
-GraphPlan(graph=graph).run(ThreadGraphRunOptions(workers=2))
+GraphExecution(graph=graph).run(ThreadGraphRunOptions(workers=2))
 ```
 
 After `prepare`, the `checks` subgraph can run `validate` and `test` concurrently.

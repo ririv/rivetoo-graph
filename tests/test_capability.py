@@ -12,8 +12,8 @@ from rivetoo_graph import (
     ExactProviderRequirement,
     Graph,
     GraphError,
+    GraphExecution,
     GraphMode,
-    GraphPlan,
     Step,
     ThreadGraphRunOptions,
     resolve_capability_requirements,
@@ -113,7 +113,7 @@ def test_one_input_unlocks_multiple_independent_steps(mode: GraphMode) -> None:
             ),
         ),
     )
-    GraphPlan(
+    GraphExecution(
         graph=Graph(steps=(provider, consumer), edges=bindings, label="root")
     ).run(ThreadGraphRunOptions(workers=4), mode=mode)
     assert a_started.is_set() and b_started.is_set()
@@ -215,7 +215,7 @@ def test_capability_binding_unlocks_only_the_consumer_input() -> None:
         edges=bindings,
     )
 
-    GraphPlan(graph=graph).run(
+    GraphExecution(graph=graph).run(
         ThreadGraphRunOptions(workers=2),
         mode="compiled",
     )
@@ -321,7 +321,7 @@ def test_capability_port_can_explicitly_export_descendant_step() -> None:
         ),
     )
 
-    GraphPlan(
+    GraphExecution(
         graph=Graph(steps=(provider, consumer), edges=bindings, label="root"),
     ).run(mode="compiled")
 
@@ -398,4 +398,4 @@ def test_capability_binding_uses_unified_execution_path() -> None:
         ),
     )
 
-    GraphPlan(graph=graph).run()
+    GraphExecution(graph=graph).run()

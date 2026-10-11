@@ -33,7 +33,7 @@ A/B 对比只改变返回值处理：基线对所有返回值创建事件循环�
 | 线程执行器，8 workers | 282.28 ms | 39.60 ms |
 
 声明和编译路径没有改动，小幅差异不作为收益或回归结论。
-`GraphPlan.run(ThreadGraphRunOptions(workers=1))` 仍使用线程执行器，
+`GraphExecution.run(ThreadGraphRunOptions(workers=1))` 仍使用线程执行器，
 不是表中的串行参考执行器。线程任务提交、同步及 Python/Rust 批量交互仍有成本，
 不能把执行一个 Step 等同于调用一个 Python 函数。
 

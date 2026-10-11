@@ -1,7 +1,7 @@
 from .entry import (
     GraphRenderFormat,
     GraphRenderOptions,
-    render_graph_plan,
+    render_execution_structure,
     resolve_graph_render_options,
 )
 from .execution import render_graph_execution, render_live_graph_execution
@@ -14,7 +14,7 @@ __all__ = [
     "render_graph",
     "render_graph_execution",
     "render_live_graph_execution",
-    "render_graph_plan",
+    "render_execution_structure",
     "resolve_graph_render_options",
     "render_graph_mermaid",
     "render_graph_compilation_mermaid",

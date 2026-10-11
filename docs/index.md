@@ -5,7 +5,7 @@ English | [简体中文](./zh-CN/index.md)
 `rivetoo-graph` is an explicit, composable DAG declaration and execution library:
 
 ```python
-from rivetoo_graph import Graph, GraphPlan, Step
+from rivetoo_graph import Graph, GraphExecution, Step
 ```
 
 ## Features
@@ -22,7 +22,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 
 ## Design goals
 
-`Graph` describes structure; `GraphPlan` owns one execution scope. Declarations
+`Graph` describes structure; `GraphExecution` owns one execution scope. Declarations
 refer directly to Step objects. Internal `StepId` values are assigned to mounted
 nodes, while labels serve presentation only.
 
@@ -55,7 +55,7 @@ performance guarantee for the latest release.
 | Type or field | Responsibility |
 | --- | --- |
 | `Graph` | Declarative execution DAG |
-| `GraphPlan` | A declaration and one execution scope |
+| `GraphExecution` | A declaration and one execution scope |
 | `Step` | Optional label and condition; Python action, Python subgraph, or Rust-native subgraph |
 | `Graph.edges` | Explicit wiring |
 | `RuntimeCondition.reads` | Result dependencies required before evaluating a condition |

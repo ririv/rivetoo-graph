@@ -4,16 +4,16 @@
 
 ## Dynamic / Compiled 模式
 
-`GraphPlan` 保留两个公开模式，但二者不再对应两套执行器：
+`GraphExecution` 保留两个公开模式，但二者不再对应两套执行器：
 
 - dynamic
-  - `GraphPlan.run(mode="dynamic")`
+  - `GraphExecution.run(mode="dynamic")`
   - 使用 Rust 声明编译器和 Rust execution session
   - 为兼容结构视图，composite 同时记录到 `executed_steps/completed_steps`
   - capability binding 与 compiled 模式使用同一 lowering
 - compiled
-  - `GraphPlan.compile()`
-  - `GraphPlan.run(mode="compiled")`
+  - `GraphExecution.compile()`
+  - `GraphExecution.run(mode="compiled")`
   - 使用同一个 Rust 声明编译器和 Rust execution session
   - composite 只记录专门的进入与完成状态
   - 支持 capability binding lowering
@@ -102,7 +102,7 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
 - 两者默认值都为 `1`
 - `observer` 是可选的
 - 未传 `observer` 时，不会发出 graph observation
-- `GraphPlan.run(options=..., mode=...)` 接受它们的联合类型
+- `GraphExecution.run(options=..., mode=...)` 接受它们的联合类型
 
 ## 执行控制
 
@@ -111,33 +111,33 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
 `KeyboardInterrupt` 等执行中断仍终止整图。宿主可以注册资源停止处理器，回收仍在运行的子进程。
 
 control 是一次性的执行作用域：一旦收到停止请求，就不会恢复，也不提供 `reset()`。
-运行前已经停止的 Plan 会直接抛出 `GraphExecutionStopped`；运行过程中收到停止请求
+运行前已经停止的 GraphExecution 会直接抛出 `GraphExecutionStopped`；运行过程中收到停止请求
 后，runtime 不再派发新的 ready step，但会等待已经启动的 step 结束，再报告停止。
 
-`GraphPlan` 默认创建独享 control：
+`GraphExecution` 默认创建独享 control：
 
 ```python
-plan = GraphPlan(graph=graph)
+execution = GraphExecution(graph=graph)
 ```
 
-独立使用 Graph 时，不会触碰宿主的进程级停止状态。若宿主把多个顺序 Plan 视为同一
+独立使用 Graph 时，不会触碰宿主的进程级停止状态。若宿主把多个顺序 GraphExecution 视为同一
 次请求，可以显式共享一份 control：
 
 ```python
 control = GraphExecutionControl()
-first_plan = GraphPlan(graph=first_graph, execution_control=control)
-second_plan = GraphPlan(
+first_execution = GraphExecution(graph=first_graph, execution_control=control)
+second_execution = GraphExecution(
     graph=second_graph,
     execution_control=control,
 )
 ```
 
-这仍然是两次顺序执行，而不是在一个 Plan 的 step 内嵌套启动另一个 Plan。两个
-Plan 各自持有独立的 `GraphExecutionState`；共享的只有请求停止与宿主资源回收信号。
-显式停止后，后一个 Plan 会在开始执行前看到停止状态，因此不会继续运行。
-普通失败仍会从 `run()` 抛出异常；调用方若捕获异常后主动运行第二个 Plan，control 不会阻止它。
-两个 Plan 间需要成功依赖时，应组合成一张图或由调用方明确处理，不能用共享 control 代替依赖边。
-信号处理、子进程终止和多个 Plan 的请求级协调由宿主负责，不属于 Graph core。
+这仍然是两次顺序执行，而不是在一个 GraphExecution 的 step 内嵌套启动另一个 GraphExecution。两个
+GraphExecution 各自持有独立的 `GraphExecutionState`；共享的只有请求停止与宿主资源回收信号。
+显式停止后，后一个 GraphExecution 会在开始执行前看到停止状态，因此不会继续运行。
+普通失败仍会从 `run()` 抛出异常；调用方若捕获异常后主动运行第二个 GraphExecution，control 不会阻止它。
+两个 GraphExecution 间需要成功依赖时，应组合成一张图或由调用方明确处理，不能用共享 control 代替依赖边。
+信号处理、子进程终止和多个 GraphExecution 的请求级协调由宿主负责，不属于 Graph core。
 
 ## 失败传播
 
@@ -173,7 +173,7 @@ C（成功）→ D（继续执行）
 ## 宿主运行设施边界
 
 Graph runtime 只负责图本身的调度、状态和结果，不隐式读取宿主的进程级设施。
-`GraphPlan` 通过两个独立端口接入宿主：
+`GraphExecution` 通过两个独立端口接入宿主：
 
 - `GraphActionLog`
   - 为 action 建立宿主日志作用域
@@ -182,7 +182,7 @@ Graph runtime 只负责图本身的调度、状态和结果，不隐式读取宿
   - 在一次执行结束或失败后消费最终图状态
   - Graph 提供 `TreeFileExecutionOutput(output_dir)`，把执行视图写入显式目录
 
-独立使用 `GraphPlan` 时，这两个端口采用明确的 standalone 行为：既不接入宿主日志，
+独立使用 `GraphExecution` 时，这两个端口采用明确的 standalone 行为：既不接入宿主日志，
 也不产生外部执行视图文件。停止控制只由独立的 `GraphExecutionControl` 负责，不属于
 action 日志端口。需要日志或执行视图时，宿主必须显式传入自己的 `GraphActionLog`
 实现和 `GraphExecutionOutput`；核心不会探测全局目录或静默切换行为。

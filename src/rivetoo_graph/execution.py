@@ -31,10 +31,10 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True)
-class GraphPlan:
+class GraphExecution:
     """DAG 图的实例化执行载体。
 
-    `GraphPlan` 把一张 `Graph` DAG 绑定到“这一次”的运行与编译上下文上。
+    `GraphExecution` 把一张 `Graph` DAG 绑定到“这一次”的运行与编译上下文上。
 
     它持有：
     - 原始图结构
@@ -62,7 +62,7 @@ class GraphPlan:
 
         results = self.execution_state.results
         if results is None:
-            raise RuntimeError("graph plan did not enable graph results")
+            raise RuntimeError("graph execution did not enable graph results")
         return results.require(self._require_unique_mounted_step_id(step))
 
     def bind_component_log_path(self, step: Step, path: Path) -> None:
@@ -93,10 +93,10 @@ class GraphPlan:
             mounted_step_ids = self._index_mounted_step_ids()
         matches = mounted_step_ids.get(step)
         if not matches:
-            raise RuntimeError(f"step '{step.label}' is not mounted in graph plan")
+            raise RuntimeError(f"step '{step.label}' is not mounted in graph execution")
         if len(matches) > 1:
             raise RuntimeError(
-                f"step '{step.label}' is mounted more than once in graph plan"
+                f"step '{step.label}' is mounted more than once in graph execution"
             )
         return next(iter(matches))
 

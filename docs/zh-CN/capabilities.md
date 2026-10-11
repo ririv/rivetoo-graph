@@ -330,8 +330,8 @@ A 和 B 的子图边界仍然保留；不会为了接线而展开声明图，也
 因此以下两种写法使用同一份 binding lowering：
 
 ```python
-GraphPlan(graph=graph).run(mode="compiled")
-GraphPlan(graph=graph).run(mode="dynamic")
+GraphExecution(graph=graph).run(mode="compiled")
+GraphExecution(graph=graph).run(mode="dynamic")
 ```
 
 ## 当前语言边界

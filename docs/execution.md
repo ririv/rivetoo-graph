@@ -6,10 +6,10 @@ English | [简体中文](./zh-CN/execution.md)
 
 Both public modes use the same Rust declaration compiler and execution session:
 
-- `GraphPlan.run(mode="dynamic")` retains compatibility presentation records:
+- `GraphExecution.run(mode="dynamic")` retains compatibility presentation records:
   composites also appear in `executed_steps/completed_steps`.
-- `GraphPlan.run(mode="compiled")` records composites through their dedicated
-  entry/completion state. `GraphPlan.compile()` exposes the compiled structure.
+- `GraphExecution.run(mode="compiled")` records composites through their dedicated
+  entry/completion state. `GraphExecution.compile()` exposes the compiled structure.
 
 Capability bindings use the same lowering in both modes. The runtime consumes
 GraphCompilation, not a second Python scheduling model. Runtime-returned graphs
@@ -72,7 +72,7 @@ Execution views use recorded condition results; they do not rerun predicates.
 
 Both concurrency limits default to 1. Observer is optional; without one, graph
 observation is not emitted. Pass either option type to
-`GraphPlan.run(options=..., mode=...)`.
+`GraphExecution.run(options=..., mode=...)`.
 
 ## Execution control
 
@@ -83,30 +83,30 @@ execution interrupts stop the run. The host can register handlers to reclaim
 running subprocesses and other resources.
 
 Control is single-use: once stopped, it stays stopped and has no reset.
-A plan with already-stopped control raises before execution. A stop during a run
+An execution with already-stopped control raises before running. A stop during a run
 prevents new dispatch, waits for already-started work, then reports cancellation.
 
-Each plan has independent control by default:
+Each execution has independent control by default:
 
 ```python
-plan = GraphPlan(graph=graph)
+execution = GraphExecution(graph=graph)
 ```
 
-A host may share control between sequential plans:
+A host may share control between sequential executions:
 
 ```python
 control = GraphExecutionControl()
-first_plan = GraphPlan(graph=first_graph, execution_control=control)
-second_plan = GraphPlan(graph=second_graph, execution_control=control)
+first_execution = GraphExecution(graph=first_graph, execution_control=control)
+second_execution = GraphExecution(graph=second_graph, execution_control=control)
 ```
 
 These remain separate runs with independent GraphExecutionState values. Sharing
 control shares cancellation and resource-stop signals, not results. After an
-explicit stop, the second plan cannot start. If the caller catches an ordinary
-failure and explicitly starts the next plan, control does not prevent it.
+explicit stop, the second execution cannot start. If the caller catches an ordinary
+failure and explicitly starts the next execution, control does not prevent it.
 For success dependencies, compose one graph or explicitly handle failure.
 
-Process signals and cross-plan request management belong to the host.
+Process signals and cross-execution request management belong to the host.
 
 ## Failure propagation
 
@@ -152,7 +152,7 @@ Direct-child counters make composite terminal-state aggregation O(V) overall.
 
 ## Host runtime interfaces
 
-GraphPlan connects host facilities through two independent interfaces:
+GraphExecution connects host facilities through two independent interfaces:
 
 - GraphActionLog establishes an action log scope and appends Python exception text
   from parallel actions.

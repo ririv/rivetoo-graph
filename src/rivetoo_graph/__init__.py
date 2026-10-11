@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         compile_graph,
     )
     from .errors import GraphError
+    from .execution import GraphExecution
     from .execution_output import (
         NO_GRAPH_EXECUTION_OUTPUT,
         GraphExecutionOutput,
@@ -56,15 +57,14 @@ if TYPE_CHECKING:
         step,
     )
     from .observe import GraphObservationEvent, GraphObserver
-    from .plan import GraphPlan
     from .render import (
         GraphRenderFormat,
         GraphRenderOptions,
+        render_execution_structure,
         render_graph,
         render_graph_compilation_mermaid,
         render_graph_execution,
         render_graph_mermaid,
-        render_graph_plan,
         render_live_graph_execution,
         resolve_graph_render_options,
     )
@@ -174,14 +174,14 @@ _EXPORT_GROUPS = (
         ),
     ),
     (".observe", ("GraphObservationEvent", "GraphObserver")),
-    (".plan", ("GraphPlan",)),
+    (".execution", ("GraphExecution",)),
     (
         ".render",
         (
             "render_graph",
             "render_graph_execution",
             "render_live_graph_execution",
-            "render_graph_plan",
+            "render_execution_structure",
             "resolve_graph_render_options",
             "render_graph_mermaid",
             "render_graph_compilation_mermaid",
@@ -297,13 +297,13 @@ __all__ = [
     "render_graph",
     "render_graph_execution",
     "render_live_graph_execution",
-    "render_graph_plan",
+    "render_execution_structure",
     "resolve_graph_render_options",
     "render_graph_mermaid",
     "render_graph_compilation_mermaid",
     "GraphRenderFormat",
     "GraphRenderOptions",
-    "GraphPlan",
+    "GraphExecution",
     "GraphExecutionOutput",
     "NoGraphExecutionOutput",
     "NO_GRAPH_EXECUTION_OUTPUT",

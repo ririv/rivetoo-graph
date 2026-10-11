@@ -40,7 +40,7 @@ settings remain unchanged.
 Declaration and compilation were unchanged; their small differences do not
 establish a gain or regression.
 
-GraphPlan.run(ThreadGraphRunOptions(workers=1)) still uses a thread driver, not
+GraphExecution.run(ThreadGraphRunOptions(workers=1)) still uses a thread driver, not
 the serial reference driver. Task submission, synchronization, and batch
 Python/Rust exchange still cost more than an ordinary function call.
 

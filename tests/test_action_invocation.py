@@ -7,9 +7,9 @@ import pytest
 
 from rivetoo_graph import (
     Graph,
+    GraphExecution,
     GraphExecutionControl,
     GraphExecutionState,
-    GraphPlan,
     GraphResultStore,
     SerialGraphExecutor,
     Step,
@@ -19,7 +19,7 @@ from rivetoo_graph.runtime import ParallelGraphExecutor
 
 
 def _execute(graph, workers):
-    compilation = GraphPlan(graph=graph).compile()
+    compilation = GraphExecution(graph=graph).compile()
     state = GraphExecutionState(results=GraphResultStore())
     if workers == 0:
         return SerialGraphExecutor(state).execute(compilation)

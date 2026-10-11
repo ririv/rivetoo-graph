@@ -12,11 +12,11 @@ from rivetoo_graph import (
     ConditionalPrerequisite,
     ExactProviderRequirement,
     Graph,
+    GraphExecution,
     GraphExecutionControl,
     GraphExecutionState,
     GraphExecutionStopped,
     GraphNodeFailure,
-    GraphPlan,
     SerialGraphExecutor,
     Step,
     StepId,
@@ -42,7 +42,7 @@ def execute(request):
                 if request.param == "thread"
                 else AsyncGraphRunOptions(concurrency=1)
             )
-            GraphPlan(graph=graph, execution_state=state).run(options)
+            GraphExecution(graph=graph, execution_state=state).run(options)
 
     return run
 
@@ -197,7 +197,7 @@ def test_capability_success_survives_failure_in_another_subgraph_branch(mode):
         steps=(provider, consumer, whole),
         edges=(*bindings, UnconditionalEdge(source=provider, target=whole)),
     )
-    plan = GraphPlan(graph=graph)
+    plan = GraphExecution(graph=graph)
     with pytest.raises(RuntimeError, match="action failed"):
         plan.run(ThreadGraphRunOptions(workers=1), mode=mode)
     assert calls == ["ready", "consume"]
@@ -304,7 +304,7 @@ def test_explicit_stop_still_prevents_unrelated_pending_actions(options):
     graph = Graph(
         steps=(Step(control.request_stop), Step(lambda: calls.append("wrong")))
     )
-    plan = GraphPlan(graph=graph, execution_control=control)
+    plan = GraphExecution(graph=graph, execution_control=control)
     with pytest.raises(GraphExecutionStopped):
         plan.run(options)
     assert calls == []
@@ -337,7 +337,7 @@ def test_cancellation_from_condition_waits_for_started_async_action():
             Step(lambda: None, when=runtime_condition(when=cancel, reads=(ready,))),
         )
     )
-    plan = GraphPlan(graph=graph, execution_control=control)
+    plan = GraphExecution(graph=graph, execution_control=control)
     with pytest.raises(GraphExecutionStopped):
         plan.run(AsyncGraphRunOptions(concurrency=2))
     assert completed == ["survived"]
@@ -364,7 +364,7 @@ def test_parallel_native_errors_are_collected_without_losing_completions(
         ],
         [],
     )
-    plan = GraphPlan(graph=Graph(steps=(Step(native),), label="root"))
+    plan = GraphExecution(graph=Graph(steps=(Step(native),), label="root"))
     with pytest.raises(ExceptionGroup) as caught:
         plan.run(options)
     assert len(caught.value.exceptions) == 2
