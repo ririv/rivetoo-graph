@@ -1,87 +1,100 @@
-# Step 开销基准
+# Step overhead benchmark
 
-本文记录 2026-10-10 同步 action 快速路径优化的 A/B 测量。它不包含后续失败隔离等
-改动，也不代表当前主线在任意机器上的性能；原始结果作为历史记录保留。
+English | [简体中文](./zh-CN/step_overhead_benchmark.md)
 
-## 边界与结论
+This records the 2026-10-10 A/B measurement of the synchronous-action fast path.
+It predates later changes such as failure isolation and is not a claim about
+current performance on arbitrary machines. Original measurements are preserved.
 
-本次测量把声明、编译、执行分开，定位短 Python action 的固定成本。
-空 action 用于暴露调度开销，不代表真实编译、网络或磁盘任务的吞吐量。
+## Scope and conclusion
 
-原来串行和线程执行器对每个 action 都执行
-`asyncio.run(await_result(result))`。即使 action 返回普通值或 `None`，
-也会创建、运行和关闭事件循环。1,000 个同步 action 因此产生 1,000 次事件循环。
-串行路径的 cProfile 样本中，约 0.379 秒总耗时里有约 0.326 秒落在这些
-`asyncio.run` 调用中；剖析器本身有开销，这组值只用于定位，不能代替下面的基准。
+Declaration, compilation, and execution were measured separately to locate fixed
+costs for short Python actions. Empty actions expose scheduling overhead, not
+compiler, network, or disk throughput.
 
-修改后按返回值分发：普通值直接返回，awaitable 才创建事件循环完成等待。
-同步路径仅增加 O(1) 返回值类型判断。没有修改图拓扑、Rust 调度状态机、线程数量、
-Step 边界或日志策略，也没有复用异步 action 的事件循环。
+Previously, serial and thread drivers called asyncio.run(await_result(result))
+for every action, including ordinary values and None. A thousand synchronous
+actions therefore created and closed a thousand event loops.
 
-## 测量环境与方法
+A serial cProfile sample attributed about 0.326 seconds of its 0.379-second total
+to those calls. Profiling adds overhead, so these numbers locate the cause rather
+than replace the measurements below.
 
-- Apple M1 Pro，arm64，macOS 26.4（25E246）
-- Python 3.13.5
-- 2026-10-10，本机当前安装的 Rust 扩展，两组之间未重新编译扩展
-- 每项测量 5 次取中位数；前后基准分别顺序运行，未同时运行两组基准
-- 微基准每项先预热一次；执行复用已编译声明，每次创建新的执行状态
-- 未启用 observer、日志文件和最终执行记录输出，日志接入另行测量
+The change dispatches on the returned value: ordinary values pass through directly;
+only awaitables create an event loop. Synchronous calls gain an O(1) type check.
+Topology, Rust scheduling, worker counts, Step boundaries, logging policy, and
+event-loop reuse were not changed.
 
-## 1,000 个独立空 Step
+## Environment and method
 
-| 阶段 | 修改前 | 修改后 |
-|---|---:|---:|
-| 声明 Graph 与 Step | 5.65 ms | 5.82 ms |
-| 编译 | 8.69 ms | 9.04 ms |
-| 串行参考执行器 | 227.21 ms | 16.99 ms |
-| 线程执行器，1 worker | 272.10 ms | 51.93 ms |
-| 线程执行器，8 workers | 282.28 ms | 39.60 ms |
+- Apple M1 Pro, arm64, macOS 26.4 (25E246).
+- Python 3.13.5.
+- 2026-10-10; the installed Rust extension was not rebuilt between groups.
+- Five samples per case, reported as medians; before/after groups ran sequentially.
+- One warm-up per microbenchmark case. Execution reused a compilation, with fresh
+  execution state for each run.
+- No observer, log files, or final execution output; logging was measured separately.
 
-声明和编译路径没有改动，小幅差异不作为收益或回归结论。
-`GraphPlan.run(ThreadGraphRunOptions(workers=1))` 仍使用线程执行器，
-不是表中的串行参考执行器。线程任务提交、同步及 Python/Rust 批量交互仍有成本，
-不能把执行一个 Step 等同于调用一个 Python 函数。
+## 1,000 independent empty Steps
 
-## 2,000 个 recipe 子图
+| Phase | Before | After |
+| --- | ---: | ---: |
+| Graph and Step declaration | 5.65 ms | 5.82 ms |
+| Compilation | 8.69 ms | 9.04 ms |
+| Serial reference driver | 227.21 ms | 16.99 ms |
+| Thread driver, 1 worker | 272.10 ms | 51.93 ms |
+| Thread driver, 8 workers | 282.28 ms | 39.60 ms |
 
-沿用 `benchmarks/recipe_scale.py`：每个 recipe 6 个串行叶子，合计 12,000 个
-Python action、2,000 个 composite，20 条 recipe 依赖链，8 workers。
+Declaration and compilation were unchanged; their small differences do not
+establish a gain or regression.
 
-| 阶段 | 修改前中位数 | 修改后中位数 |
-|---|---:|---:|
-| 编译 | 0.490070 s | 0.500653 s |
-| 执行 | 3.365259 s | 0.520759 s |
+GraphPlan.run(ThreadGraphRunOptions(workers=1)) still uses a thread driver, not
+the serial reference driver. Task submission, synchronization, and batch
+Python/Rust exchange still cost more than an ordinary function call.
 
-执行约加速 6.46 倍，但不能据此声称真实 package 构建也加速 6.46 倍。
+## 2,000 recipe subgraphs
 
-执行原始样本（秒）：
+The recipe_scale.py workload uses 6 sequential leaves per recipe: 12,000 Python
+actions, 2,000 composites, 20 recipe chains, and 8 workers.
+
+| Phase | Before median | After median |
+| --- | ---: | ---: |
+| Compilation | 0.490070 s | 0.500653 s |
+| Execution | 3.365259 s | 0.520759 s |
+
+Execution improved by about 6.46×. This does not imply a 6.46× speedup for real
+package builds.
+
+Raw execution samples, in seconds:
 
 ```text
 before = [3.369867, 3.348461, 3.354630, 3.374089, 3.365259]
 after  = [0.546870, 0.525995, 0.520759, 0.520433, 0.515768]
 ```
 
-## Rivetoo 日志接入验证
+## Rivetoo logging integration
 
-额外使用 Rivetoo 的真实 `RivetooGraphActionLog`，把 1,000 个 action 放入一个
-composite 并给该 composite 绑定临时日志文件。每个 action 断言日志上下文已绑定；
-写日志场景逐个调用 `append_log_text`，运行后确认恰好写出 1,000 行。
-图编译和日志路径绑定不计入执行耗时，最终执行记录输出未启用。
+An additional measurement used the host's real RivetooGraphActionLog with 1,000
+actions in one composite and a temporary component log path. Each action checked
+that its log context was bound. The write case appended one line per action and
+verified exactly 1,000 lines afterward.
 
-这组在同一进程中交替比较旧的无条件 `asyncio.run` 返回值处理与新实现，
-每种先预热一次，再取 5 次中位数；没有修改宿主日志实现。
+Compilation and log-path binding were excluded from execution time, and final
+execution-file output was disabled. In the same process, the benchmark alternated
+the old unconditional asyncio.run handling and the new implementation, warmed up
+each once, and took five-sample medians. Host logging itself was unchanged.
 
-| 8 workers 的场景 | 旧处理 | 新处理 |
-|---|---:|---:|
-| 只进入/退出真实日志作用域 | 320.92 ms | 56.67 ms |
-| 每个 action 追加一行日志 | 459.09 ms | 178.91 ms |
+| Case, 8 workers | Old handling | New handling |
+| --- | ---: | ---: |
+| Enter/exit real log scope only | 320.92 ms | 56.67 ms |
+| Append one log line per action | 459.09 ms | 178.91 ms |
 
-日志路径解析及文件 I/O 不会因同步快速路径而消失；这些数值受文件系统状态影响，
-不能将空图收益直接视为生产日志开启时的收益。
+Log-path resolution and file I/O remain. File-system state affects these numbers;
+empty-graph improvements are not production-logging speedup guarantees.
 
-## 复现
+## Reproduction
 
-在 Graph 仓库根目录中，使用已安装当前 Graph 扩展的虚拟环境：
+From the Graph repository root, with the current extension installed:
 
 ```bash
 .venv/bin/python benchmarks/step_overhead.py --nodes 1000 --repeats 5
@@ -89,15 +102,20 @@ composite 并给该 composite 绑定临时日志文件。每个 action 断言日
   --recipes 2000 --steps 6 --lanes 20 --workers 8 --repeats 5
 ```
 
-第一条分离声明、编译、串行执行和线程执行；第二条保留嵌套图及跨 recipe 依赖。
-在 Rivetoo 主仓库中运行时，给脚本路径加 `rivetoo-graph/` 前缀。
-这些命令测量当前 checkout；不会自动切换到表中的修改前版本。Rivetoo 日志接入测量
-依赖宿主工程，不是独立 Graph 安装的自带功能。
+The first script separates declaration, compilation, serial execution, and threaded
+execution. The second retains nesting and cross-recipe dependencies. From the
+Rivetoo parent repository, prefix script paths with rivetoo-graph/.
 
-## 本轮未改的部分
+These commands measure the current checkout and do not automatically restore the
+before version. The Rivetoo logging measurement requires that host project; it is
+not an integration bundled with standalone Graph.
 
-- 不把若干 Step 的 action 合并为一个 action；依赖、失败和观察边界不变。
-- 不把 `workers=1` 隐式改成主线程执行，避免改变线程与控制语义。
-- 不复用线程内的事件循环，避免让异步后台任务跨 Step 残留。
-- 不对函数签名反射增加全局缓存，也不调整图的编译模型。
-- 若真实短任务仍受调度或日志限制，再分别剖析 Future 调度、日志路径解析和文件写入。
+## Deliberately unchanged
+
+- Actions are not merged; dependency, failure, and observation boundaries remain.
+- workers=1 does not silently switch execution to the main thread.
+- Thread-local event loops are not reused, avoiding background tasks surviving
+  across Steps.
+- There is no new global signature-reflection cache or compilation-model change.
+- If real short tasks remain limited by scheduling or logs, profile Future
+  scheduling, log-path resolution, and file writing independently.

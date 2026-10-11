@@ -1,80 +1,80 @@
 # rivetoo-graph
 
-`rivetoo-graph` 是一个显式、可组合的 Python DAG 声明与执行库。Python 导入入口为：
+English | [简体中文](./zh-CN/index.md)
+
+`rivetoo-graph` is an explicit, composable DAG declaration and execution library:
 
 ```python
 from rivetoo_graph import Graph, GraphPlan, Step
 ```
 
-库本身提供：
+## Features
 
-- 纯有向拓扑与 DAG 校验
-- Step、Graph 和声明期接线
-- `>>` 串行与 `|` 并列组合
-- 构图前要求恰好一个结果的静态选择
-- 静态条件、运行时条件和条件边
-- 子图边界与能力端口
-- 统一 Rust 编译执行路径，以及 dynamic / compiled 两种展示模式
-- 线程与异步调度后端
-- 执行控制、结果读取、观察事件和渲染
+- Directed topology and DAG validation.
+- Step and Graph declarations with explicit wiring.
+- Sequential `>>` and independent `|` composition.
+- Exactly-one static selection before graph construction.
+- Static conditions, runtime conditions, and conditional edges.
+- Subgraph boundaries and capability ports.
+- One Rust compilation/execution path with dynamic and compiled presentation modes.
+- Thread-based and async execution drivers.
+- Execution control, results, observation events, and rendering.
 
-## 设计目标
+## Design goals
 
-- `Graph` 只表达声明结构，单次执行状态由 `GraphPlan` 持有
-- 声明期直接引用 Step 对象，挂载后才分配内部 `StepId`
-- 依赖、条件读取和能力绑定全部显式参与拓扑校验
-- 子图可以组合，但不会被声明 DSL 隐式展开
-- 宿主日志、终端、请求状态和领域流程通过公开端口接入
-- 不读取宿主进程中的隐式全局设施
+`Graph` describes structure; `GraphPlan` owns one execution scope. Declarations
+refer directly to Step objects. Internal `StepId` values are assigned to mounted
+nodes, while labels serve presentation only.
 
-## 文档
+Dependencies, condition reads, and capability bindings participate explicitly in
+topology validation. Composition preserves subgraph boundaries rather than
+silently flattening declarations. Host logging, terminals, request state, and
+domain workflows are connected explicitly, not read from implicit global facilities.
 
-- [核心模型](./core_model.md)
-- [拓扑复杂度与实现开销](./topology_complexity.md)
-- [执行语义](./execution.md)
-- [Python 图与 Rust 原生图](./native-graphs.md)
-- [条件边](./conditional_edges.md)
-- [条件 Step](./conditional_steps.md)
-- [能力依赖与子图端口](./capabilities.md)
-- [Rust 架构与语言边界](./rust-architecture.md)
-- [大规模 Recipe 图基准](./recipe_scale_benchmark.md)
-- [Step 开销基准](./step_overhead_benchmark.md)
+## Documentation
 
-## 核心边界
+- [Core model](./core_model.md)
+- [Topology complexity and implementation costs](./topology_complexity.md)
+- [Execution semantics](./execution.md)
+- [Python graphs and Rust-native graphs](./native-graphs.md)
+- [Conditional edges](./conditional_edges.md)
+- [Conditional steps](./conditional_steps.md)
+- [Capability dependencies and subgraph ports](./capabilities.md)
+- [Rust architecture and language boundaries](./rust-architecture.md)
+- [Recipe-scale benchmark](./recipe_scale_benchmark.md)
+- [Step overhead benchmark](./step_overhead_benchmark.md)
 
-- `Graph`
-  - 声明态 DAG 结构
-- `GraphPlan`
-  - 声明图与一次执行作用域
-- `Step`
-  - 可选展示 label、条件，以及 Python action、Python 子图或完整 Rust 原生子图
-- `Graph.edges`
-  - 显式接线关系
-- `RuntimeCondition.reads`
-  - 条件求值前必须完成的结果依赖
-- `StepWiring` / `GraphWiring`
-  - 声明期组合结构
-- `GraphCompilation`
-  - 正式 runtime 使用的执行结构与 composite 边界
+## Core boundaries
 
-声明期身份、展示 label 与运行时 `StepId` 是三层不同语义。调度和结果定位使用
-`StepId`；label 只用于展示。
+| Type or field | Responsibility |
+| --- | --- |
+| `Graph` | Declarative execution DAG |
+| `GraphPlan` | A declaration and one execution scope |
+| `Step` | Optional label and condition; Python action, Python subgraph, or Rust-native subgraph |
+| `Graph.edges` | Explicit wiring |
+| `RuntimeCondition.reads` | Result dependencies required before evaluating a condition |
+| `StepWiring` / `GraphWiring` | Declaration-time composition |
+| `GraphCompilation` | Runtime execution structure and composite boundaries |
 
-## 不属于 Graph core 的内容
+## Outside Graph core
 
-Graph core 不知道任何具体宿主领域，例如：
+Graph core does not know about domain entities, build phases, caches, artifacts,
+configuration, working directories, CLI requests, log directories, or process-level
+signal handling. Hosts model these concerns and compose graphs or connect public
+interfaces. There are no implicit branches for a particular host application.
 
-- 领域实体或领域阶段
-- 领域缓存策略或产物
-- 领域配置或工作目录
-- CLI 请求、日志目录或进程级信号处理
+## Current limitations
 
-这些内容应由宿主先建模，再组合为 Graph 或通过 Graph 的公开端口接入。Graph core
-不为某个宿主领域提供隐式分支。
+- A graph returned by an action creates a nested session. It does not yet share
+  the outer session's global concurrency budget.
+- `GraphExecutionState` is single-use, with no reset or reuse operation.
+- The runtime does not aggregate host-domain results.
+- Runtime-generated subgraphs cannot be compiled in advance. Once returned, they
+  enter the same Rust compiler used for statically declared graphs.
 
-## 当前限制
+## Languages
 
-- 运行期返回的图会创建嵌套 session，暂不共享外层 session 的全局并发预算
-- `GraphExecutionState` 只允许一次执行，不提供 reset 或复用语义
-- Graph runtime 不聚合宿主领域结果
-- 运行时返回的子图无法提前编译，但返回后会立即进入同一 Rust 编译器
+English is the default. Chinese pages live in [zh-CN/](./zh-CN/index.md), with the
+same filenames and a language link on each page. Update both versions when
+changing API semantics, examples, or limitations. Historical benchmark samples
+remain tied to their recorded dates and workloads.

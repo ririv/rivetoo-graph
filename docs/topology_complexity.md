@@ -1,112 +1,126 @@
-# 拓扑复杂度与实现开销
+# Topology complexity and implementation costs
 
-本文区分 Python 通用拓扑 API、执行 Graph 的声明校验以及 Rust 编译后的全局 DAG。
-它们不是同一条调用链。以下复杂度不包含 action、宿主 predicate 或日志 I/O 的成本；
-Python 哈希表操作按平均 O(1) 计，宿主自定义节点的 hash / equality 成本另计。
+English | [简体中文](./zh-CN/topology_complexity.md)
 
-## 两套纯拓扑入口
+Python's generic topology API, execution Graph declaration validation, and final
+Rust DAG validation are distinct paths. These bounds exclude actions, host
+predicates, and log I/O. Python hash-table operations assume average O(1);
+user-defined hash/equality costs are additional.
 
-| 入口 | 实现 | 用途 |
+## Two pure-topology entry points
+
+| Entry point | Implementation | Purpose |
 | --- | --- | --- |
-| `rivetoo_graph.topology` | Python，DAG 校验使用 `graphlib` | 可哈希领域节点的通用有向图 |
-| `crates/topology` | Rust，整数节点与邻接索引 | 执行图声明校验和编译后 DAG 校验 |
+| rivetoo_graph.topology | Python, with graphlib for DAG checks | Generic hashable domain nodes |
+| crates/topology | Rust, integer nodes and adjacency indexes | Execution declaration and compiled-DAG validation |
 
-Python 的 `DirectedTopology` 并不是 Rust topology 的逐方法 FFI 包装。
-执行 `Graph` 也不会先创建 Python `DirectedTopology` 再交给 Rust。
+Python DirectedTopology is not a per-method FFI wrapper. Execution Graph does not
+construct a Python DirectedTopology before sending it to Rust.
 
-## Python 通用拓扑
+## Python topology
 
-对于 V 个节点、A 条输入 arc：
+For V nodes and A input arcs:
 
-- `DirectedTopology(nodes, arcs)` 接受 iterable，创建规范化节点、arc 和双向邻接索引。
-- 每条 arc 在同一次消费中验证端点并写入前驱、后继索引；不会主动去重输入 arc。
-- 构造时间、持久空间均为 O(V + A)。
-- `predecessors_by_node()` / `successors_by_node()` 返回已有只读映射，不重扫关系。
-- `reachable_from(roots)` 先验证 roots，再沿后继遍历；时间为 O(V + R + Aᵣ)，
-  R 是输入 root 数量，Aᵣ 是可达区域的 arc 数量。它仍会创建全体节点集合，不能把
-  小闭包查询描述成只访问可达节点的成本。待处理栈可能保存重复端点引用，
-  最坏辅助空间为 O(V + A + R)。
+- DirectedTopology accepts iterables and normalizes nodes, arcs, and both adjacency
+  indexes. Each arc is validated and inserted into predecessor/successor indexes
+  during the same consumption pass.
+- Input arcs are not automatically deduplicated.
+- Construction time and retained space are O(V + A).
+- predecessors_by_node and successors_by_node return existing read-only mappings.
+- reachable_from first validates roots, then follows successors. Time is
+  O(V + R + Aᵣ), where R is the number of input roots and Aᵣ counts reachable arcs.
+  It still constructs the complete node set, so a small closure query is not
+  solely proportional to the reachable nodes.
+- The pending stack can contain repeated endpoints. Worst-case auxiliary space
+  is O(V + A + R).
 
-`DAGTopology` 组合 `DirectedTopology`，构造时调用 Python
-`graphlib.TopologicalSorter.prepare()` 校验无环，时间和辅助空间为 O(V + A)。
-`topological_order()` 是另一次 O(V + A) 操作，构造时不会预先保存排序结果。
+DAGTopology composes DirectedTopology and calls graphlib.TopologicalSorter.prepare
+at construction. Validation takes O(V + A) time and auxiliary space.
+topological_order is a separate O(V + A) operation; construction does not cache
+the ordering.
 
-## 执行 Graph 的声明校验
+## Execution Graph declaration validation
 
-这里定义：
+For one Graph level, let:
 
-- V：本层 Graph 的 Step 数量。
-- E：本层显式边数量。
-- B：条件边和 `Step.when` 中所有 `RuntimeCondition.reads` 引用总数。
-- A：去重后的本层阻塞 arc 数量，A ≤ E + B。
+- V be its Step count.
+- E be its explicit edge count.
+- B count all RuntimeCondition.reads references on edges and Steps.
+- A be the deduplicated local blocking-arc count, with A ≤ E + B.
 
-本层阻塞关系来自普通边、条件边的来源节点和运行时条件的读取依赖。
-条件边在声明时保守参与无环校验，即使其静态条件在随后编译时为假。
-`reads` 的遍历来自显式数据依赖，不是拓扑排序额外制造的业务关系。
+Blocking relations come from ordinary edges, conditional-edge sources, and runtime
+reads. Conditional edges conservatively participate in declaration-time cycle
+checks even if their static conditions later evaluate to false.
+Reads is an explicit data dependency, not a relation invented by topological sorting.
 
-当前 [model.py](../src/rivetoo_graph/model.py) 的实际链路是：
+The actual [model.py](../src/rivetoo_graph/model.py) path is:
 
 ```text
-验证 Step 并分配本层整数索引
+Validate Steps and assign local integer indexes
     ↓
-_validated_blocking_arcs：遍历边与 reads，去重并生成 Arc
+_validated_blocking_arcs: traverse edges/reads and deduplicate Arc values
     ↓
-物化 blocking_arcs 元组
+Materialize a blocking_arcs tuple
     ↓
-转换为整数端点对列表
-    ↓ 一次批量调用
-Rust dag_cycle：创建拓扑索引并检测环
+Convert to a list of integer endpoint pairs
+    ↓ one batch call
+Rust dag_cycle: construct indexes and detect cycles
 ```
 
-这里确实存在 Arc 元组和整数端点列表，不是“生成一条关系就直接写入 Rust 索引”的
-零中间集合实现。关系投影、转换、索引构造和环检测各自进行线性处理，总时间仍为
-O(V + E + B)，峰值辅助空间为 O(V + A)。多个中间表示增加常数成本，不改变渐进阶。
+The Arc tuple and integer-pair list are real intermediate allocations; this is not
+a zero-intermediate streaming path directly into Rust. Projection, conversion,
+indexing, and cycle detection each do linear work. Total time is O(V + E + B);
+peak auxiliary space is O(V + A). Multiple representations add constant costs
+without changing the asymptotic bound.
 
-B = 0 时，总时间为 O(V + E)。这也适用于不读取 Step 结果的运行时条件，
-不能简单把所有运行时条件都视为增加一个 V 倍的循环。
+With B = 0, time is O(V + E), including runtime conditions that read no results.
+Runtime conditions do not inherently add another V-sized loop.
 
-## 能力端口与全局编译校验
+## Capabilities and global compilation
 
-`CapabilityBinding` 在声明阶段校验组件及端口，但不直接作为本层 composite 之间的
-阻塞 arc。实际依赖是“提供者内部出口 → 消费者内部入口”，必须在编译时定位并 lower。
+CapabilityBinding validates components and ports at declaration time, but does not
+become a local blocking arc between composites. The real dependency is from an
+internal provider output to an internal consumer input, located and lowered during
+compilation.
 
-接口归属校验会遍历当前图的 Python 子图挂载结构，建立 Step 挂载次数索引，再验证
-端口引用。若挂载节点数为 M、端口引用数为 R，则该项时间为 O(M + R)、空间为 O(M)；
-它不是上节本层 V 的一部分。重复挂载导致端口引用有歧义时直接报错。
+Interface ownership checks traverse mounted Python subgraphs once, index Step
+mount counts, and validate references. For M mounted nodes and R port references,
+this costs O(M + R) time and O(M) space. M is not merely the local V above.
+Ambiguous multiply mounted references are errors.
 
-Rust 编译器随后校验完整执行 DAG，包括：
+The Rust compiler validates the complete DAG, including known subgraphs,
+composite dependencies, reads, and lowered capability bindings. For N final nodes
+and L expanded blocking relations, pure DAG validation is O(N + L) in time and
+space. A capability binding can expand to several inputs; count expanded relations,
+not just binding objects.
 
-- 声明期已知子图与 composite 的依赖；
-- 运行时条件的 reads；
-- lower 后的跨子图 capability bindings。
+This is not a blanket O(N + L) promise for the entire compiler. Declaration
+traversal, hierarchical paths, Python side tables, static predicates, and PyO3
+conversion have their own costs. Runtime-generated graphs also require separate
+compilation and nested sessions.
 
-若最终执行节点数为 N、展开后的阻塞关系数为 L，纯 DAG 校验时间和空间为
-O(N + L)。一个能力绑定可能指向多个入口，L 应统计展开后的关系，而非只数 binding。
+## GraphWiring boundaries
 
-这不等于承诺整个编译过程恒为 O(N + L)：声明遍历、层级路径构造、Python 侧表、
-静态条件求值和 PyO3 转换都有各自成本。运行期返回的新图还会单独编译并创建嵌套
-session，不能在构图前把它的规模算入已知静态图。
+GraphWiring.entries and exits are structural DSL boundaries, not named capability
+ports or a separately stored topology.
 
-## GraphWiring 的入口与出口
+Each calculation reads explicit ordinary/conditional edges, runtime reads, and the
+Step order used to return deterministic boundaries. Time is O(V + E + B) and
+auxiliary space O(V).
 
-`GraphWiring.entries` / `exits` 是用于 DSL 接线的结构边界，不是
-`CapabilityInterface` 的具名端口，也不是额外保存的一份拓扑。
+Entries and exits are independent properties, so reading both calculates both.
+Sequential composition usually reads the left exits and right entries.
+Immutable declarations currently carry no mutable boundary cache.
 
-一次边界计算读取：
+## Interpreting performance
 
-- 显式普通边与条件边；
-- 条件边和 Step 的运行时条件 reads；
-- 本层 Step 顺序，用于返回有序边界。
+Rust does not lower the asymptotic complexity of these linear algorithms.
+Benefits come from compact integer indexes, native loops, and batch scheduling;
+costs still include Python traversal, temporary objects, and conversions.
+“Uses Rust” does not imply every small graph is faster, and O(V + E) does not
+mean exactly one loop.
 
-时间为 O(V + E + B)，辅助空间为 O(V)。`entries` 与 `exits` 是独立属性，
-分别读取会分别计算；串行 DSL 通常读取左侧 exits 和右侧 entries。
-声明对象当前没有为此维护可变缓存。
-
-## 性能结论的适用范围
-
-Rust 并未降低上述线性算法的渐进复杂度。它的收益来自紧凑整数索引、原生循环和
-批量调度；成本也包含 Python 声明遍历、临时对象及跨语言转换。不能只凭“使用 Rust”
-推断某张小图一定更快，也不能把 O(V + E) 理解为只执行一遍循环。
-
-历史测量见 [Recipe 规模基准](./recipe_scale_benchmark.md) 和
-[Step 开销基准](./step_overhead_benchmark.md)。测量覆盖的版本与负载以各文档为准。
+Historical measurements are recorded in the
+[recipe-scale benchmark](./recipe_scale_benchmark.md) and
+[Step overhead benchmark](./step_overhead_benchmark.md), with their own dates and
+workload boundaries.

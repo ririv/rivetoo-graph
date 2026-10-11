@@ -1,32 +1,37 @@
 # rivetoo-graph
 
-`rivetoo-graph` 是一个显式、可组合的 Python DAG 声明与执行库。
+English | [简体中文](./README.zh-CN.md)
 
-它提供图、步骤、条件依赖、同步与异步执行、运行状态、结果读取和执行视图渲染。
-库本身不依赖宿主的日志、终端或请求状态；宿主能力通过独立端口显式接入。
+`rivetoo-graph` is an explicit, composable DAG declaration and execution library
+with a Python API and a Rust execution core.
 
-Python 导入入口为：
+It provides steps, subgraphs, conditional dependencies, thread-based and async
+execution, result access, execution state, and graph rendering. Logging, terminal
+integration, and request-level control belong to the host application and are
+connected through explicit interfaces.
 
-```python
-from rivetoo_graph import Graph, GraphPlan, Step
-```
+## Architecture
 
-`main` 的声明编译、执行图校验和调度状态机由 Rust 实现；Python 保留声明 API、
-任意 callable 的执行与宿主集成。也可以挂载完整 Rust 原生子图，两类 action 共用
-执行图与并发预算。迁移前的纯 Python 基线保留在 `python` 分支，仅用于历史比较。
-当前边界见
-[Rust 架构](./docs/rust-architecture.md)。
+On `main`, Rust implements declaration compilation, execution-graph validation,
+and the scheduling state machine. Python retains graph declarations, arbitrary
+callables, result objects, and host integration. Complete Rust-native subgraphs
+can join the same execution graph and concurrency budget.
 
-本地开发需要 Python 3.13 或更高版本、Rust 工具链和 maturin。
-激活虚拟环境后，把原生模块安装到该环境：
+The `python` branch preserves the pre-migration baseline for historical
+comparison; it is not a runtime fallback. See [Rust architecture](./docs/rust-architecture.md).
+
+## Local development
+
+You need Python 3.13 or later, a Rust toolchain, and maturin. With a virtual
+environment activated, install the native extension into that environment:
 
 ```bash
 maturin develop
 ```
 
-库没有纯 Python 执行兜底；原生扩展必须可用。
+The native extension is required. There is no pure-Python execution fallback.
 
-## 简单示例
+## Quick example
 
 ```python
 from rivetoo_graph import GraphPlan, Step
@@ -37,11 +42,12 @@ graph = (prepare >> finish).graph()
 GraphPlan(label="example", graph=graph).run()
 ```
 
-`>>` 声明先后依赖，`|` 组合无相互依赖的分支；实际并发度由执行选项控制。
-普通 action 失败只阻断相关下游，无关分支继续运行，最终汇总报告失败。
+`>>` declares ordering; `|` composes independent branches. Run options determine
+actual concurrency. An ordinary action failure blocks dependent work while
+unrelated branches continue; the run ultimately reports the failures.
 
-完整的模型、组合与执行说明见 [Graph 文档](./docs/index.md)。
+See the [documentation](./docs/index.md) for the model, composition API, and execution rules.
 
-## 许可证
+## License
 
-本项目采用 [MIT 许可证](./LICENSE)。
+This project is licensed under the [MIT License](./LICENSE).
