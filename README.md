@@ -17,8 +17,7 @@ and the scheduling state machine. Python retains graph declarations, arbitrary
 callables, result objects, and host integration. Complete Rust-native subgraphs
 can join the same execution graph and concurrency budget.
 
-The `python` branch preserves the pre-migration baseline for historical
-comparison; it is not a runtime fallback. See [Rust architecture](./docs/rust-architecture.md).
+See [Rust architecture](./docs/rust-architecture.md) for implementation boundaries.
 
 ## Local development
 

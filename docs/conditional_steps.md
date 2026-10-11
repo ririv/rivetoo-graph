@@ -6,8 +6,7 @@ English | [简体中文](./zh-CN/conditional_steps.md)
 
 Conditional edges control whether a dependency applies. `Step.when` controls
 whether the Step itself participates. It works for Python leaves, Python Graph
-composites, and NativeGraph composites, without separate ConditionalStep or
-ConditionalGraph wrapper types.
+composites, and NativeGraph composites.
 
 ## Declaration
 

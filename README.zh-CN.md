@@ -15,8 +15,7 @@ from rivetoo_graph import Graph, GraphPlan, Step
 
 `main` 的声明编译、执行图校验和调度状态机由 Rust 实现；Python 保留声明 API、
 任意 callable 的执行与宿主集成。也可以挂载完整 Rust 原生子图，两类 action 共用
-执行图与并发预算。迁移前的纯 Python 基线保留在 `python` 分支，仅用于历史比较。
-当前边界见
+执行图与并发预算。实现边界见
 [Rust 架构](./docs/zh-CN/rust-architecture.md)。
 
 本地开发需要 Python 3.13 或更高版本、Rust 工具链和 maturin。

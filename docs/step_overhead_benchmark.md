@@ -12,18 +12,10 @@ Declaration, compilation, and execution were measured separately to locate fixed
 costs for short Python actions. Empty actions expose scheduling overhead, not
 compiler, network, or disk throughput.
 
-Previously, serial and thread drivers called asyncio.run(await_result(result))
-for every action, including ordinary values and None. A thousand synchronous
-actions therefore created and closed a thousand event loops.
-
-A serial cProfile sample attributed about 0.326 seconds of its 0.379-second total
-to those calls. Profiling adds overhead, so these numbers locate the cause rather
-than replace the measurements below.
-
-The change dispatches on the returned value: ordinary values pass through directly;
-only awaitables create an event loop. Synchronous calls gain an O(1) type check.
-Topology, Rust scheduling, worker counts, Step boundaries, logging policy, and
-event-loop reuse were not changed.
+The A/B comparison isolates return-value handling: the baseline creates an event
+loop for every result; the fast path returns ordinary values directly and creates
+an event loop only for awaitables. Other topology, scheduling, logging, and worker
+settings remain unchanged.
 
 ## Environment and method
 
@@ -109,13 +101,3 @@ Rivetoo parent repository, prefix script paths with rivetoo-graph/.
 These commands measure the current checkout and do not automatically restore the
 before version. The Rivetoo logging measurement requires that host project; it is
 not an integration bundled with standalone Graph.
-
-## Deliberately unchanged
-
-- Actions are not merged; dependency, failure, and observation boundaries remain.
-- workers=1 does not silently switch execution to the main thread.
-- Thread-local event loops are not reused, avoiding background tasks surviving
-  across Steps.
-- There is no new global signature-reflection cache or compilation-model change.
-- If real short tasks remain limited by scheduling or logs, profile Future
-  scheduling, log-path resolution, and file writing independently.

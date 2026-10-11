@@ -71,72 +71,22 @@ For this workload, the Rust path was approximately:
 The sum illustrates the approximate fixed cost of one compilation and one run.
 It is not the median of per-sample total durations.
 
-## Issues found during investigation
+## Runtime driver experiment
 
-An earlier comparison measured about 2.88 seconds for the Rust-backed runtime on
-the smaller workload, slower than the corresponding Python microbenchmark.
-The problem was not the Rust state machine: each session advance rescanned all
-compiled nodes to project skip state into native indexes, approaching O(V²) with
-many short actions.
+A separate 2026-08-28 experiment compared batched Python execution with a private
+Tokio driver calling Python once per action. On CPython 3.13 with the GIL,
+macOS arm64, and a release extension, 2,000 independent no-op actions with
+8 workers and 5 samples produced these medians:
 
-Commit `48a0598` built StepId-to-native-index mapping once and then sent only new
-skip requests. On the 2,000-leaf microbenchmark, runtime fell from about 2.88 to
-1.37 seconds. Moving a state machine does not automatically remove Python overhead;
-the adapter must also be batched and incremental.
+| Driver | Median |
+| --- | ---: |
+| Batch | approximately 0.321 s |
+| Tokio callback | approximately 1.280 s |
 
-### Compilation validation complexity
-
-The first large-graph comparison took over 11 seconds to compile on both paths.
-Rust compile_declaration took only about 0.1 seconds. Most cost was in Python
-GraphCompilation.__post_init__: each composite rescanned all nodes to validate
-ownership, taking O(C × V). With 2,000 composites and 14,000 nodes, this produced
-about 28 million scans and tens of millions of dataclass equality calls.
-
-The fix built these indexes once:
-
-- StepId → CompiledNode.
-- CompiledCompositeRef → set[StepId].
-- One frozenset[StepId] per distinct declaration scope.
-
-For V nodes, A direct dependency/child references, and S Steps across distinct
-scopes, validation became O(V + A + S) with O(V + S) extra space.
-
-Avoid eagerly evaluating an expensive default:
-
-```python
-index.setdefault(key, frozenset(scope.values()))
-```
-
-Python evaluates that default even when the key exists. The fix checks membership
-first and constructs each scope set only once.
-
-Compilation medians fell from about 11.61 to 0.49 seconds on Rust and from about
-11.31 to 1.00 seconds on Python. Profiled function calls dropped from roughly
-55.04 million to 1.18 million.
-
-### Duplicate cross-language validation
-
-After that fix, Python GraphCompilation still repeated full structural validation
-of Rust-validated graphs. Three related optional fields represented the native
-graph and condition/node side tables, admitting incomplete combinations and
-obscuring two different construction paths.
-
-An explicit sum type separated them:
-
-- Hand-constructed Python compilations receive full validation before creating
-  the native execution graph.
-- Rust-compiled inputs provide graph and complete side tables together. Python
-  performs O(V) identity and unique-ID checks.
-
-Five-sample A/B measurements reduced compilation from about 0.41 to 0.33 seconds.
-Runtime medians of 9.38 and 9.41 seconds differed by about 0.4%, consistent with
-thread-scheduling noise. A separate 15-sample compilation-only comparison reduced
-the median from 0.3894 to 0.3149 seconds and the mean from 0.3885 to 0.3033 seconds.
-
-That profile measured compile_declaration at about 0.08 seconds and Python side-table
-recovery at about 0.39 seconds, including profiler overhead. Remaining Python work
-recovers opaque actions, predicates, label paths, observation, and result scopes;
-it is not a second topology or scheduling algorithm.
+The callback/batch ratio was approximately 3.98. This is a historical scheduling
+microbenchmark, not the recipe-scale workload above, and does not establish that
+all Rust runtimes are slower. The experiment lives in `crates/tokio-runtime`
+and `benchmarks/runtime_drivers.py`; production drivers do not depend on it.
 
 ## Reproduction
 

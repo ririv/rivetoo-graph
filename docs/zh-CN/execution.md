@@ -188,41 +188,12 @@ Graph runtime 只负责图本身的调度、状态和结果，不隐式读取宿
 action 日志端口。需要日志或执行视图时，宿主必须显式传入自己的 `GraphActionLog`
 实现和 `GraphExecutionOutput`；核心不会探测全局目录或静默切换行为。
 
-## 执行规则
+## 显式跳过
 
-统一 runtime 在：
+显式 skip 状态可以指定 step path。compiled 模式下跳过 composite 时，其后代一并跳过。
+它不同于 failed / blocked，不会执行 action 或生成 action 结果。
 
-- [src/rivetoo_graph/runtime/](../../src/rivetoo_graph/runtime/)
-
-当前执行规则：
-
-1. 图必须是 DAG
-2. 按 `Graph.edges` 做拓扑执行
-3. 若图里有 `RuntimeCondition`：
-   - 条件边按运行期结果判定依赖是否生效
-   - `Step.when` 按运行期结果判定当前节点是否启用
-4. 若 `Step.when` 的条件求值为假（`when` 不直接接受 bool）：
-   - 静态条件在编译时裁剪节点；运行时条件将节点标为 skipped
-   - 运行时仍须等待条件的 `reads`，但不等待其余 prerequisite
-   - 不进入子图 action
-5. 声明期子图由 Rust 编译为 composite；运行期返回图重新进入同一编译器
-6. `ExecutionSession` 按 action 所有权分发叶子；Python action 批量返回 Python driver，
-   `NativeGraph` 中的 Rust action 直接提交 Rust worker
-7. composite 只在协调线程维护生命周期，不提交给 worker；compiled 模式不将其写入
-   `executed_steps`，dynamic 模式保留 composite 的兼容展示记录
-8. 条件边保留为 `CompiledConditionalDependency`，不生成伪造的 gate step
-9. `GraphExecutionState` 可显式 skip 某个 step path
-10. 若 skip 的是组合节点路径，compiled 模式下其所有后代路径也会一起跳过
-11. 若启用了结果模块，成功 step 会把结果写入 `GraphExecutionState.results`
-12. 每个编译条件实例在当前 session 中最多求值一次；其它依赖尚未完成时复用已判定结果。
-    重用同一个 `RuntimeCondition` 对象并不保证跨使用位置合并求值
-13. 执行渲染读取记录下来的条件结果，不重新执行 predicate
-14. 普通 action 失败阻断相关下游，无关分支继续，最终汇总抛错；没有 fallback 或自动重试。
-    显式取消、执行中断和基础设施错误的规则见上文“失败传播”
-
-`RuntimeCondition.reads` 虽然不是普通 Graph edge，但它会阻塞条件求值，因此参与
-`Graph` 和 `GraphCompilation` 的 DAG 环检测。读取依赖和边共同成环时，
-会在构造或编译阶段直接失败，不会留到 runtime 报 unresolved dependencies。
+声明、编译和结果 API 统一见[核心模型](./core_model.md)；条件与失败传播按上文规则处理。
 
 ## 为什么当前不提供 runtime hooks
 

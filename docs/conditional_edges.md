@@ -31,8 +31,7 @@ They differ in evaluation time and input:
 - Runtime conditions lower to prerequisites identified by ConditionId.
 - The resulting graph enters the unified Rust execution session.
 
-There is no separate public freeze API. Compiled conditional dependencies do not
-create extra gate Steps or worker tasks. CompiledComposite preserves each subgraph
+Compiled conditional dependencies do not create extra gate Steps or worker tasks. CompiledComposite preserves each subgraph
 boundary: a false internal edge does not make the whole composite finish early.
 
 ## Static conditions

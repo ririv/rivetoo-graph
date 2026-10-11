@@ -4,16 +4,7 @@
 
 `rivetoo-graph` 保留 Python 声明 API，正式执行使用 Rust 声明编译器和调度状态机。
 Rust 持有完整的编译图、调度索引和单次执行状态；Python 保留任意 callable、
-结果对象与宿主集成。本文描述已实现的边界，不是待执行的迁移计划。
-
-## 分支
-
-- `python`
-  - 保留 Rust 迁移开始前的纯 Python 基线
-- `main`
-  - Rust 化主线
-
-`python` 是历史对照，不是正式执行兜底。`main` 不保留第二套 Python 调度状态机。
+结果对象与宿主集成。
 
 ## crate 边界
 
@@ -118,29 +109,11 @@ Python 在有状态变化时通过 `start/advance` 与 session
 `mode="dynamic"` 与 `mode="compiled"` 目前保留的是兼容的展示和 composite 记录语义，
 不再代表两套执行引擎。capability binding 在两种模式下进入同一 lowering。
 
-## 运行时实验结论
+## 运行时实验
 
-Tokio 实验位于 `crates/tokio-runtime`，入口只在 `_native` 中以私有名称暴露；正式
-executor 不依赖它。`benchmarks/runtime_drivers.py` 使用同一张图和同一组零成本 Python
-action，对比：
-
-- 正式方案：Rust 批量返回 ready，Python 执行后批量 `advance`
-- 实验方案：Tokio `spawn_blocking`，每个 action 通过 PyO3 反向调用 Python
-
-2026-08-28 在 CPython 3.13（GIL 启用）、macOS arm64、release 原生扩展上，2,000 个
-独立空 action、8 worker、5 次采样的中位数为：
-
-- batch：约 0.321 秒
-- Tokio callback：约 1.280 秒
-- Tokio callback / batch：约 3.98 倍
-
-该基准专门放大调度边界成本，不代表真实构建耗时比例；真实 action 较重时差距会被
-稀释。这是当时版本、机器和工作负载下的结果，不能据此断言任何 Rust runtime 都更慢，
-也不是当前版本的性能数值。后续同步 action 快速路径的测量见
-[Step 开销基准](./step_overhead_benchmark.md)。
-Tokio 仍保留为可重复实验，正式路径选择事件驱动的混合协议。Rust action 则改变了
-action 所有权：Python 只挂载完整 `NativeGraph`，原生 leaf 的 action
-调用不经过 Python；混合 driver 只在批次边界接收完成事件并推进统一 session。
+私有 `crates/tokio-runtime` 和 `benchmarks/runtime_drivers.py` 用于比较批量执行与
+逐 action Tokio/PyO3 回调，不属于正式 API。历史测量集中在
+[基准记录](./recipe_scale_benchmark.md#运行时驱动实验)。
 
 ## 唯一事实来源
 
@@ -169,17 +142,13 @@ prerequisite 同样使用和类型区分：
 运行时条件由 `ConditionId` 引用；predicate 对象保留在 Python adapter，core 只保存
 其显式 `reads`。因此 core 可以判断阻塞关系和环，但不会解释 Python 业务函数。
 
-## 领域依赖图的边界
+## 领域边界
 
-package 选择、版本、选项、平台条件等属于宿主的依赖解析业务，不属于执行图核心。
-本仓库不规定宿主的依赖图必须迁入 Rust，也不把某个宿主的迁移计划作为 Graph API。
+package 选择、版本、选项和平台条件属于宿主，不属于执行图核心。
+Python 通用拓扑 API 与 Rust topology crate 是两套独立实现，详见
+[拓扑复杂度](./topology_complexity.md)。
 
-Python 的通用拓扑 API 与 Rust 的 topology crate 分别提供纯图操作。宿主可以按自己的
-数据边界选择使用；执行图内部使用 Rust topology，并不意味着 Python 的通用拓扑 API
-已经成为它的 FFI 包装。若未来需要跨语言批量分析，应先测量完整数据转换与算法成本，
-避免逐节点往返，并继续让不稳定的领域语义留在宿主。
-
-## 保留的宿主边界
+## Python 边界
 
 能力声明先由 Python adapter 验证端口对象确实属于对应子图，再把 component、capability、
 requirement 与 selection 映射成连续整数 ID。provider 索引、任意 provider 的唯一性、

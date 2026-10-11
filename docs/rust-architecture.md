@@ -5,14 +5,7 @@ English | [简体中文](./zh-CN/rust-architecture.md)
 The public declaration API is Python. Production execution uses a Rust declaration
 compiler and scheduling state machine. Rust owns the compiled graph, scheduling
 indexes, and session state; Python retains arbitrary callables, results, and host
-integration. This describes implemented boundaries, not a migration roadmap.
-
-## Branches
-
-- main: the Rust-backed production implementation.
-- python: the pre-migration Python baseline for historical comparisons.
-
-The Python branch is not a fallback. Main has no second Python scheduling state machine.
+integration.
 
 ## Crate boundaries
 
@@ -100,27 +93,10 @@ behavior, not different execution engines.
 
 ## Runtime experiment
 
-The private Tokio experiment is exposed only through private native entry points.
-Production drivers do not depend on it. `benchmarks/runtime_drivers.py` compares:
-
-- Batched readiness, Python execution, and batched advance.
-- Tokio spawn_blocking with a PyO3 callback for every Python action.
-
-On 2026-08-28, using CPython 3.13 with the GIL, macOS arm64, and a release extension,
-2,000 independent no-op actions with 8 workers and 5 samples had these medians:
-
-- Batch: approximately 0.321 seconds.
-- Tokio callback: approximately 1.280 seconds.
-- Callback / batch: approximately 3.98.
-
-This amplifies scheduling overhead; it is not a real-build speed ratio or evidence
-that every Rust runtime is slower. It records that version, machine, and workload,
-not current performance. Later synchronous-action measurements are in the
-[Step overhead benchmark](./step_overhead_benchmark.md).
-
-The experiment remains reproducible. Native actions use a different ownership
-boundary: complete graphs are mounted from Python, but leaf calls stay in Rust.
-Only batch completion and session coordination cross back to the mixed driver.
+The private `crates/tokio-runtime` and `benchmarks/runtime_drivers.py` compare
+batched execution with per-action Tokio/PyO3 callbacks. They are not production
+APIs. Historical measurements are recorded in the
+[benchmark notes](./recipe_scale_benchmark.md#runtime-driver-experiment).
 
 ## Single sources of truth
 
@@ -140,18 +116,13 @@ Prerequisites are unconditional or conditional variants. Runtime conditions use
 ConditionId; predicates remain in Python side tables, while core records reads.
 Core can therefore detect blocking and cycles without interpreting Python logic.
 
-## Domain dependency graphs
+## Domain boundary
 
-Package selection, versions, options, and platform predicates belong to the host's
-dependency resolver, not this execution core. This repository neither requires
-domain dependency graphs to move to Rust nor turns one host's roadmap into an API.
+Package selection, versions, options, and platform predicates belong to the host,
+not the execution core. Python's generic topology API and the Rust topology crate
+are separate implementations; see [topology complexity](./topology_complexity.md).
 
-Python's topology module and the Rust topology crate provide separate pure graph
-operations. The former is not a per-method FFI wrapper for the latter. Future
-batch-analysis integrations should measure conversion and algorithm costs, avoid
-per-node crossings, and keep unstable domain semantics in the host.
-
-## Retained host boundaries
+## Python boundary
 
 Capability resolution validates Python port ownership, encodes components,
 capabilities, requirements, and selections as integers, and calls Rust once.

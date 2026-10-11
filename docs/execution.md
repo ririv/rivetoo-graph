@@ -163,27 +163,15 @@ Standalone defaults do not connect host logging or write execution-view files.
 Control remains the responsibility of GraphExecutionControl, not the logger.
 There is no global-directory discovery or silent change of behavior.
 
-## Execution rules
+## Explicit skipping
 
-The unified [runtime](../src/rivetoo_graph/runtime/) follows explicit DAG
-dependencies, including condition reads and lowered capability bindings.
+Explicit skip state can target a step path. In compiled mode, skipping a composite
+also skips its descendants. This is distinct from failed or blocked state and does
+not invoke the action or create its result.
 
-A false static Step condition removes the node during compilation. A false runtime
-condition waits for its reads, then skips the node without waiting for its other
-prerequisites or entering its subgraph. `when` accepts condition objects, not bool.
-
-Known subgraphs compile as composites. Python leaves are dispatched to the Python
-driver, native leaves to Rust workers. Composites maintain lifecycle state without
-occupying a worker; compiled presentation does not list them as executed leaves.
-
-Conditional dependencies do not create synthetic gate actions. Explicit skip state
-can target a step path; in compiled mode, skipping a composite also skips its
-descendants. Successful return values are recorded when result storage is enabled.
-Condition results are retained while other prerequisites remain pending.
-
-Ordinary failures isolate dependent work and are reported at the end. There is no
-fallback or automatic retry. Cancellation and infrastructure errors follow the
-separate rules above.
+The common declaration, compilation, and result APIs are described in the
+[core model](./core_model.md); conditions and failure propagation follow the rules
+above.
 
 ## Why there are no side-effectful runtime hooks
 

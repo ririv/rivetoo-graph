@@ -41,6 +41,12 @@ domain workflows are connected explicitly, not read from implicit global facilit
 - [Conditional steps](./conditional_steps.md)
 - [Capability dependencies and subgraph ports](./capabilities.md)
 - [Rust architecture and language boundaries](./rust-architecture.md)
+
+## Historical benchmarks
+
+These records preserve measured workloads and results, not the current API or a
+performance guarantee for the latest release.
+
 - [Recipe-scale benchmark](./recipe_scale_benchmark.md)
 - [Step overhead benchmark](./step_overhead_benchmark.md)
 

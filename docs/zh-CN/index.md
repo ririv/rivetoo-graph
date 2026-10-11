@@ -39,6 +39,11 @@ from rivetoo_graph import Graph, GraphPlan, Step
 - [条件 Step](./conditional_steps.md)
 - [能力依赖与子图端口](./capabilities.md)
 - [Rust 架构与语言边界](./rust-architecture.md)
+
+## 历史基准
+
+以下记录保留测量负载与结果，不属于当前 API 说明，也不承诺最新版本的性能。
+
 - [大规模 Recipe 图基准](./recipe_scale_benchmark.md)
 - [Step 开销基准](./step_overhead_benchmark.md)
 

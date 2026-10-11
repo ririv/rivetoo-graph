@@ -72,66 +72,20 @@ rust-python runtime = [9.41339295799844, 9.493625707924366,
 “两项中位数之和”仅用于展示一次编译加一次执行的大致固定成本，不是对逐次总耗时
 样本取中位数。
 
-## 调查中发现的问题
+## 运行时驱动实验
 
-初次对照时，Rust 路径的完整 runtime 中位数约为 2.88 秒，而当时使用的较小纯 Python
-微基准更快。原因不是 Rust 状态机，而是 Python bridge 在每次 session advance 时扫描
-全部编译节点，把 skip 状态重新投影成 native index。大量短节点会让这段工作接近
-`O(V²)`。
+另一项 2026-08-28 实验比较了批量 Python 执行与逐 action 回调 Python 的私有 Tokio
+驱动。在启用 GIL 的 CPython 3.13、macOS arm64、release 原生扩展上，2,000 个独立空
+action、8 worker、5 次采样的中位数为：
 
-`48a0598` 改为一次建立 `StepId -> native index`，之后只增量传递新增 skip 请求。较小的
-2,000 leaf 微基准中，Rust 完整 runtime 随之从约 2.88 秒降至约 1.37 秒。该问题说明：
-迁移状态机并不自动消除 Python 开销，跨语言适配器本身也必须保持批量和增量语义。
+| 驱动 | 中位数 |
+| --- | ---: |
+| Batch | 约 0.321 s |
+| Tokio callback | 约 1.280 s |
 
-### 编译校验复杂度
-
-第一次大图对照中，两条路径的编译中位数都超过 11 秒。profile 表明 Rust
-`compile_declaration` 只消耗约 0.1 秒，主要时间来自 Python
-`GraphCompilation.__post_init__`：每个 composite 都重新扫描所有节点以验证 owner，复杂度
-为 `O(C * V)`。2,000 个 composite 与 14,000 个节点会产生约 2,800 万次扫描，并进一步
-触发数千万次 dataclass equality。
-
-校验现改为单次建立以下索引：
-
-- `StepId -> CompiledNode`
-- `CompiledCompositeRef -> set[StepId]`
-- 每个不同声明作用域的 `frozenset[StepId]`
-
-设 `V` 为节点数、`A` 为直接依赖与 child 引用总数、`S` 为所有不同声明作用域的 step
-总数，校验时间复杂度收敛为 `O(V + A + S)`，额外空间为 `O(V + S)`。
-
-实现时不能使用：
-
-```python
-index.setdefault(key, frozenset(scope.values()))
-```
-
-即使 `key` 已存在，Python 也会先计算默认值；在大根作用域下仍会重复执行数百万次 hash。
-当时的修复改为先判断 key 是否存在，再只为每个不同作用域构造一次集合。
-
-修复后，Rust 编译中位数从约 11.61 秒降至 0.49 秒，纯 Python 从约 11.31 秒降至
-1.00 秒。profile 中函数调用量也从约 5,504 万次降至约 118 万次。
-
-### 重复的跨语言编译校验
-
-上述复杂度修复后，Rust 声明编译器已经验证过的图仍会在构造 Python
-`GraphCompilation` 时再次执行完整结构校验。原实现用三个彼此关联的可选字段表示
-native graph、运行期条件和节点侧表，既允许表达只传一部分输入的非法状态，也无法明确
-区分“验证 Python 手工构造的编译模型”和“绑定 Rust 已验证结果”两条路径。
-
-该轮修改将输入改为显式和类型：
-
-- Python 手工构造的 `GraphCompilation` 继续执行完整验证，再生成 native execution graph
-- Rust 编译结果必须一次提供完整 graph、condition 和 node 侧表，Python 只做 `O(V)` 的
-  对象身份与唯一 ID 校验
-
-同一提交前后的 5 次完整 A/B 基准中，Rust 编译中位数从约 0.41 秒降至约 0.33 秒；
-runtime 中位数分别为 9.38 秒和 9.41 秒，约 0.4% 的差异属于线程调度波动。另一次只测
-编译的 15 次 A/B 采样中，中位数从 0.3894 秒降至 0.3149 秒，均值从 0.3885 秒降至
-0.3033 秒。该轮 profile 中
-`compile_declaration` 约为 0.08 秒，Python 侧表恢复约为 0.39 秒（含 profiler 开销）；
-剩余 Python 时间用于恢复 action、predicate、label path、observe 和结果作用域等不透明
-宿主对象，不是第二套拓扑或调度算法。
+callback / batch 约为 3.98。这是历史调度微基准，不是上面的 recipe 规模负载，
+也不能证明所有 Rust runtime 都更慢。实验位于 `crates/tokio-runtime` 与
+`benchmarks/runtime_drivers.py`，正式驱动不依赖它。
 
 ## 如何复现
 
