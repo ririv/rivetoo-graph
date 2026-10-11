@@ -10,6 +10,16 @@ execution, result access, execution state, and graph rendering. Logging, termina
 integration, and request-level control belong to the host application and are
 connected through explicit interfaces.
 
+## When to use it
+
+- Compose build or automation tasks with explicit dependencies.
+- Run independent data-processing or validation tasks concurrently, then join them.
+- Reuse subgraphs inside a larger workflow while keeping execution observable.
+
+This is an in-process task graph library, not a distributed workflow service.
+Your application owns the actions and integration; the library handles dependency
+ordering and execution state.
+
 ## Architecture
 
 On `main`, Rust implements declaration compilation, execution-graph validation,
@@ -33,13 +43,20 @@ The native extension is required. There is no pure-Python execution fallback.
 ## Quick example
 
 ```python
-from rivetoo_graph import GraphPlan, Step
+from rivetoo_graph import GraphPlan, Step, ThreadGraphRunOptions
 
 prepare = Step(lambda: print("prepare"), label="prepare")
+validate = Step(lambda: print("validate"), label="validate")
+test = Step(lambda: print("test"), label="test")
 finish = Step(lambda: print("finish"), label="finish")
-graph = (prepare >> finish).graph()
-GraphPlan(label="example", graph=graph).run()
+
+checks = (validate | test).graph(label="checks")
+graph = (prepare >> checks >> finish).graph()
+GraphPlan(label="example", graph=graph).run(ThreadGraphRunOptions(workers=2))
 ```
+
+After `prepare`, the `checks` subgraph can run `validate` and `test` concurrently.
+`finish` waits for both to succeed; their print order is not guaranteed.
 
 `>>` declares ordering; `|` composes independent branches. Run options determine
 actual concurrency. An ordinary action failure blocks dependent work while

@@ -7,6 +7,15 @@
 它提供图、步骤、条件依赖、同步与异步执行、运行状态、结果读取和执行视图渲染。
 库本身不依赖宿主的日志、终端或请求状态；宿主能力通过独立端口显式接入。
 
+## 适用场景
+
+- 通过显式依赖组合构建或自动化任务。
+- 并发执行相互独立的数据处理或校验任务，再汇合后续步骤。
+- 在更大的工作流中复用子图，并保留执行状态的可观测性。
+
+这是进程内的任务图库，不是分布式工作流服务。应用负责动作及外部集成，库负责
+依赖顺序和执行状态。
+
 Python 导入入口为：
 
 ```python
@@ -30,13 +39,20 @@ maturin develop
 ## 简单示例
 
 ```python
-from rivetoo_graph import GraphPlan, Step
+from rivetoo_graph import GraphPlan, Step, ThreadGraphRunOptions
 
 prepare = Step(lambda: print("prepare"), label="prepare")
+validate = Step(lambda: print("validate"), label="validate")
+test = Step(lambda: print("test"), label="test")
 finish = Step(lambda: print("finish"), label="finish")
-graph = (prepare >> finish).graph()
-GraphPlan(label="example", graph=graph).run()
+
+checks = (validate | test).graph(label="checks")
+graph = (prepare >> checks >> finish).graph()
+GraphPlan(label="example", graph=graph).run(ThreadGraphRunOptions(workers=2))
 ```
+
+`prepare` 完成后，`checks` 子图中的 `validate` 和 `test` 可以并发执行。
+`finish` 等待两者成功完成；两者的打印顺序不保证。
 
 `>>` 声明先后依赖，`|` 组合无相互依赖的分支；实际并发度由执行选项控制。
 普通 action 失败只阻断相关下游，无关分支继续运行，最终汇总报告失败。
