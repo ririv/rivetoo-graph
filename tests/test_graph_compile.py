@@ -92,7 +92,7 @@ def test_graph_compilation_rejects_unknown_prerequisite() -> None:
         label="root",
         wiring=(Step(label="build", action=LeafAction(fn=lambda: None)).wire(),),
     )
-    compilation = GraphPlan(label="root", graph=source_graph).compile()
+    compilation = GraphPlan(graph=source_graph).compile()
     invalid_step = replace(
         compilation.steps[0],
         after=(CompiledStepRef(StepId((99,))),),
@@ -110,7 +110,7 @@ def test_graph_compilation_rejects_unknown_prerequisite() -> None:
 
 def test_graph_compilation_rejects_missing_composite_child() -> None:
     source_graph = _make_nested_graph(stage_graph=_make_stage_graph())
-    compilation = GraphPlan(label="root", graph=source_graph).compile()
+    compilation = GraphPlan(graph=source_graph).compile()
     invalid_composite = replace(compilation.composites[0], children=())
 
     with pytest.raises(GraphError, match="children do not match owned nodes"):
@@ -131,7 +131,7 @@ def test_graph_compilation_rejects_dependency_cycle() -> None:
             Step(label="build", action=LeafAction(fn=lambda: None)).wire(),
         ),
     )
-    compilation = GraphPlan(label="root", graph=source_graph).compile()
+    compilation = GraphPlan(graph=source_graph).compile()
     prepare, build = compilation.steps
 
     with pytest.raises(GraphError, match="dependency cycle"):
@@ -175,7 +175,7 @@ def test_graph_compilation_rejects_runtime_condition_read_cycle() -> None:
             Step(label="build", action=lambda: None).wire(),
         ),
     )
-    compilation = GraphPlan(label="root", graph=source_graph).compile()
+    compilation = GraphPlan(graph=source_graph).compile()
     prepare, build = compilation.steps
 
     with pytest.raises(GraphError, match="dependency cycle"):
@@ -201,12 +201,8 @@ def test_run_compiled_matches_dynamic_run_and_preserves_local_step_lookup() -> N
     dynamic_state = GraphExecutionState(results=GraphResultStore())
     compiled_state = GraphExecutionState(results=GraphResultStore())
 
-    dynamic_plan = GraphPlan(
-        label="root", graph=_make_value_graph(), execution_state=dynamic_state
-    )
-    compiled_plan = GraphPlan(
-        label="root", graph=_make_value_graph(), execution_state=compiled_state
-    )
+    dynamic_plan = GraphPlan(graph=_make_value_graph(), execution_state=dynamic_state)
+    compiled_plan = GraphPlan(graph=_make_value_graph(), execution_state=compiled_state)
 
     dynamic_plan.run(options=ThreadGraphRunOptions(workers=1))
     compiled_plan.run(options=ThreadGraphRunOptions(workers=1), mode="compiled")
@@ -245,7 +241,7 @@ def test_run_compiled_skips_composite_step_by_prefix() -> None:
         initial_skip_requests={StepId((1,))},
         results=GraphResultStore(),
     )
-    plan = GraphPlan(label="root", graph=_make_value_graph(), execution_state=state)
+    plan = GraphPlan(graph=_make_value_graph(), execution_state=state)
 
     plan.run(options=ThreadGraphRunOptions(workers=1), mode="compiled")
 
@@ -260,7 +256,6 @@ def test_run_compiled_skips_composite_step_by_prefix() -> None:
 def test_render_graph_renders_terminal_tree() -> None:
     rendered = render_graph_plan(
         GraphPlan(
-            label="plan",
             graph=_make_nested_graph(stage_graph=_make_stage_graph()),
         ),
         options=GraphRenderOptions(),
@@ -268,7 +263,7 @@ def test_render_graph_renders_terminal_tree() -> None:
 
     assert rendered == "\n".join(
         [
-            "plan",
+            "root",
             "├─ prepare",
             "├─ stage [graph] [after: prepare]",
             "│  ├─ configure",
@@ -280,9 +275,7 @@ def test_render_graph_renders_terminal_tree() -> None:
 
 def test_render_graph_accepts_graph_compilation_as_structure_view() -> None:
     rendered = render_graph(
-        GraphPlan(
-            label="root", graph=_make_nested_graph(stage_graph=_make_stage_graph())
-        ).compile(),
+        GraphPlan(graph=_make_nested_graph(stage_graph=_make_stage_graph())).compile(),
         root_label="root",
     )
 
@@ -321,9 +314,7 @@ def test_render_graph_can_render_compilation_view_from_graph() -> None:
 
 def test_render_graph_can_render_compilation_view_from_compilation() -> None:
     rendered = render_graph(
-        GraphPlan(
-            label="root", graph=_make_nested_graph(stage_graph=_make_stage_graph())
-        ).compile(),
+        GraphPlan(graph=_make_nested_graph(stage_graph=_make_stage_graph())).compile(),
         root_label="root",
         mode="compiled",
     )
@@ -357,9 +348,7 @@ def test_render_graph_mermaid_renders_graph_structure() -> None:
 
 def test_render_graph_mermaid_accepts_graph_compilation_as_structure_view() -> None:
     rendered = render_graph_mermaid(
-        GraphPlan(
-            label="root", graph=_make_nested_graph(stage_graph=_make_stage_graph())
-        ).compile(),
+        GraphPlan(graph=_make_nested_graph(stage_graph=_make_stage_graph())).compile(),
         root_label="root",
     )
 
@@ -369,9 +358,7 @@ def test_render_graph_mermaid_accepts_graph_compilation_as_structure_view() -> N
 
 def test_render_graph_compilation_mermaid_shows_compiled_graph_and_composites() -> None:
     rendered = render_graph_compilation_mermaid(
-        GraphPlan(
-            label="root", graph=_make_nested_graph(stage_graph=_make_stage_graph())
-        ).compile(),
+        GraphPlan(graph=_make_nested_graph(stage_graph=_make_stage_graph())).compile(),
         root_label="root",
     )
 
@@ -395,9 +382,7 @@ def test_render_graph_mermaid_can_render_compilation_view_from_graph() -> None:
 
 def test_render_graph_mermaid_can_render_compilation_view_from_compilation() -> None:
     rendered = render_graph_mermaid(
-        GraphPlan(
-            label="root", graph=_make_nested_graph(stage_graph=_make_stage_graph())
-        ).compile(),
+        GraphPlan(graph=_make_nested_graph(stage_graph=_make_stage_graph())).compile(),
         root_label="root",
         mode="compiled",
     )
@@ -425,7 +410,7 @@ def test_render_graph_execution_overlays_runtime_status() -> None:
     )
     state = GraphExecutionState(results=GraphResultStore())
 
-    GraphPlan(label="root", graph=graph, execution_state=state).run(
+    GraphPlan(graph=graph, execution_state=state).run(
         options=ThreadGraphRunOptions(workers=1)
     )
 
@@ -684,7 +669,7 @@ def test_compile_graph_preserves_conditional_dependency_without_gate_step() -> N
         ),
     )
 
-    compilation = GraphPlan(label="root", graph=graph).compile()
+    compilation = GraphPlan(graph=graph).compile()
 
     assert [step.id for step in compilation.steps] == [
         StepId((0,)),
@@ -730,7 +715,7 @@ def test_graph_plan_compile_supports_static_and_runtime_conditions() -> None:
         static_condition_eval=_ConditionEvaluator(active=frozenset({"android"})),
     )
 
-    compilation = GraphPlan(label="root", graph=graph).compile()
+    compilation = GraphPlan(graph=graph).compile()
 
     assert [step.id for step in compilation.steps] == [
         StepId((0,)),
@@ -815,7 +800,7 @@ def test_compile_graph_preserves_runtime_when_on_leaf_step() -> None:
         ),
     )
 
-    compilation = GraphPlan(label="root", graph=graph).compile()
+    compilation = GraphPlan(graph=graph).compile()
 
     assert compilation.steps[1].id == StepId((1,))
     assert compilation.steps[1].when is not None
@@ -843,7 +828,7 @@ def test_compile_graph_flattens_runtime_conditioned_composite() -> None:
         ),
     )
 
-    compilation = GraphPlan(label="root", graph=graph).compile()
+    compilation = GraphPlan(graph=graph).compile()
 
     assert [step.id for step in compilation.steps] == [
         StepId((0,)),
@@ -885,7 +870,7 @@ def test_compile_graph_flattens_child_with_conditional_dependency() -> None:
         ),
     )
 
-    compilation = GraphPlan(label="root", graph=graph).compile()
+    compilation = GraphPlan(graph=graph).compile()
 
     assert [step.id for step in compilation.steps] == [
         StepId((0, 0)),

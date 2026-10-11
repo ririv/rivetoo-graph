@@ -51,8 +51,8 @@ test = Step(lambda: print("test"), label="test")
 finish = Step(lambda: print("finish"), label="finish")
 
 checks = (validate | test).graph(label="checks")
-graph = (prepare >> checks >> finish).graph()
-GraphPlan(label="example", graph=graph).run(ThreadGraphRunOptions(workers=2))
+graph = (prepare >> checks >> finish).graph(label="example")
+GraphPlan(graph=graph).run(ThreadGraphRunOptions(workers=2))
 ```
 
 After `prepare`, the `checks` subgraph can run `validate` and `test` concurrently.

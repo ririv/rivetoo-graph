@@ -117,7 +117,7 @@ control 是一次性的执行作用域：一旦收到停止请求，就不会恢
 `GraphPlan` 默认创建独享 control：
 
 ```python
-plan = GraphPlan(label="build", graph=graph)
+plan = GraphPlan(graph=graph)
 ```
 
 独立使用 Graph 时，不会触碰宿主的进程级停止状态。若宿主把多个顺序 Plan 视为同一
@@ -125,9 +125,8 @@ plan = GraphPlan(label="build", graph=graph)
 
 ```python
 control = GraphExecutionControl()
-first_plan = GraphPlan(label="first", graph=first_graph, execution_control=control)
+first_plan = GraphPlan(graph=first_graph, execution_control=control)
 second_plan = GraphPlan(
-    label="second",
     graph=second_graph,
     execution_control=control,
 )

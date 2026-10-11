@@ -571,11 +571,17 @@ class Graph:
             if edge.target is step and not isinstance(edge, CapabilityBinding)
         )
 
+    @property
+    def display_label(self) -> str:
+        """返回图名；匿名图使用明确的未命名展示标识，不生成身份。"""
+
+        return "<unlabeled>" if self.label is None else self.label
+
     def _validate(self) -> None:
         if self.label == "":
             raise GraphError("graph label must not be empty")
 
-        graph_label = "<unlabeled>" if self.label is None else self.label
+        graph_label = self.display_label
         _validate_graph_topology(
             steps=self.steps,
             edges=self.edges,

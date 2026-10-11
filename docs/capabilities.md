@@ -280,8 +280,8 @@ Both subgraph boundaries remain. The compiler does not turn this into “all of 
 must finish before any of B starts.” Both public modes use the same lowering:
 
 ```python
-GraphPlan(label="root", graph=graph).run(mode="compiled")
-GraphPlan(label="root", graph=graph).run(mode="dynamic")
+GraphPlan(graph=graph).run(mode="compiled")
+GraphPlan(graph=graph).run(mode="dynamic")
 ```
 
 ## Language boundaries

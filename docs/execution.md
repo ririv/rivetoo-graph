@@ -89,15 +89,15 @@ prevents new dispatch, waits for already-started work, then reports cancellation
 Each plan has independent control by default:
 
 ```python
-plan = GraphPlan(label="build", graph=graph)
+plan = GraphPlan(graph=graph)
 ```
 
 A host may share control between sequential plans:
 
 ```python
 control = GraphExecutionControl()
-first_plan = GraphPlan(label="first", graph=first_graph, execution_control=control)
-second_plan = GraphPlan(label="second", graph=second_graph, execution_control=control)
+first_plan = GraphPlan(graph=first_graph, execution_control=control)
+second_plan = GraphPlan(graph=second_graph, execution_control=control)
 ```
 
 These remain separate runs with independent GraphExecutionState values. Sharing

@@ -114,7 +114,7 @@ def test_one_input_unlocks_multiple_independent_steps(mode: GraphMode) -> None:
         ),
     )
     GraphPlan(
-        label="root", graph=Graph(steps=(provider, consumer), edges=bindings)
+        graph=Graph(steps=(provider, consumer), edges=bindings, label="root")
     ).run(ThreadGraphRunOptions(workers=4), mode=mode)
     assert a_started.is_set() and b_started.is_set()
 
@@ -215,7 +215,7 @@ def test_capability_binding_unlocks_only_the_consumer_input() -> None:
         edges=bindings,
     )
 
-    GraphPlan(label="root", graph=graph).run(
+    GraphPlan(graph=graph).run(
         ThreadGraphRunOptions(workers=2),
         mode="compiled",
     )
@@ -322,8 +322,7 @@ def test_capability_port_can_explicitly_export_descendant_step() -> None:
     )
 
     GraphPlan(
-        label="root",
-        graph=Graph(steps=(provider, consumer), edges=bindings),
+        graph=Graph(steps=(provider, consumer), edges=bindings, label="root"),
     ).run(mode="compiled")
 
 
@@ -399,4 +398,4 @@ def test_capability_binding_uses_unified_execution_path() -> None:
         ),
     )
 
-    GraphPlan(label="root", graph=graph).run()
+    GraphPlan(graph=graph).run()

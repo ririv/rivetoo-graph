@@ -37,7 +37,6 @@ class GraphPlan:
     `GraphPlan` 把一张 `Graph` DAG 绑定到“这一次”的运行与编译上下文上。
 
     它持有：
-    - 本次执行的根图 label
     - 原始图结构
     - 这次执行共享的 `GraphExecutionState`
     - 这次执行使用的 `GraphExecutionControl`
@@ -47,7 +46,6 @@ class GraphPlan:
     - `run()`：按 dynamic / compiled 两种模式执行这次图实例
     """
 
-    label: str
     graph: Graph
     execution_state: GraphExecutionState = field(default_factory=GraphExecutionState)
     execution_control: GraphExecutionControl = field(
@@ -56,12 +54,8 @@ class GraphPlan:
     action_log: GraphActionLog = NO_GRAPH_ACTION_LOG
     execution_output: GraphExecutionOutput = NO_GRAPH_EXECUTION_OUTPUT
 
-    def __post_init__(self) -> None:
-        if not self.label:
-            raise GraphError("graph plan label must not be empty")
-
     def compile(self) -> GraphCompilation:
-        return compile_graph(self.graph, root_label=self.label)
+        return compile_graph(self.graph, root_label=self.graph.display_label)
 
     def require_result(self, step: Step) -> StepResult:
         """按声明 step 引用读取本次图挂载中的执行结果。"""
@@ -140,7 +134,7 @@ class GraphPlan:
             self.execution_output.write(
                 self.graph,
                 self.execution_state,
-                root_label=self.label,
+                root_label=self.graph.display_label,
                 mode=mode,
             )
         except Exception as output_error:

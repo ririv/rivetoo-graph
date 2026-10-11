@@ -54,7 +54,7 @@ GraphExecutionState
 
 `label` 只用于展示，不是调度身份。它可以省略：
 
-- 根图省略 label 时，使用 `GraphPlan.label`
+- 根图省略 label 时，显示为 `<unlabeled>`
 - 嵌套图省略 label 时，使用承载它的 Step 的已解析 label
 - Graph 显式声明 label 时，该值优先
 
@@ -105,10 +105,8 @@ runtime 消费三种 action：
   - 可选展示名
 - `Graph.label`
   - 图自身的可选展示名
-- `GraphPlan.label`
-  - 本次执行的根展示名
 
-`GraphPlan.label`、`Graph.label` 和 `Step.label` 都不承担身份语义。
+`Graph.label` 和 `Step.label` 都不承担身份语义。
 
 未填写 Step label 时，编译阶段使用该挂载位置的 `StepId` 作为展示名。
 因此匿名 lambda 可以保持无 label，不需要为了显示而伪造稳定身份。
@@ -345,7 +343,6 @@ cache_miss = runtime_condition(
 
 ```python
 plan = GraphPlan(
-    label="build",
     graph=graph,
     execution_state=GraphExecutionState(),
     execution_control=GraphExecutionControl(),
@@ -354,7 +351,6 @@ plan = GraphPlan(
 
 它包含：
 
-- `label: str`
 - `graph: Graph`
 - `execution_state: GraphExecutionState`
 - `execution_control: GraphExecutionControl`
@@ -367,7 +363,9 @@ plan = GraphPlan(
 - `run(...)`
 - `require_result(step)`
 
-`GraphPlan.label` 只是根展示名。调度和结果定位继续使用 `StepId`。
+图名只在 `Graph.label` 声明。编译、渲染和执行输出统一读取 `graph.display_label`：
+有名字时使用声明值，匿名图显示为 `<unlabeled>`。这个展示值不是身份，调度和结果
+定位继续使用 `StepId`；GraphPlan 不再为图另外起名。
 
 `GraphExecutionState` 只属于当前 Plan 的一次运行。`GraphExecutionControl`
 默认同样由 Plan 独享；宿主若需要把多个顺序 Plan 归入同一次停止控制，可以显式

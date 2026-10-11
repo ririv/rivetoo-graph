@@ -45,7 +45,7 @@ read-only input/output mappings. At construction, passing an inner Graph as
 `capabilities` explicitly forwards its entire interface.
 
 Labels are optional display names, not scheduling identities. An unlabeled root
-uses `GraphPlan.label`; an unlabeled nested graph uses its mounting Step's resolved
+is displayed as `<unlabeled>`; an unlabeled nested graph uses its mounting Step's resolved
 label. An explicit Graph label takes precedence.
 
 Explicit wiring lives in `Graph.edges`. A normalized Graph does not accept
@@ -86,7 +86,7 @@ steps outside their graph; cross-subgraph synchronization uses capability ports.
 - Step references identify declarations for wiring, condition reads, and results.
 - `StepId` identifies one mounted position, such as `0`, `1`, or `1.0`.
   Compilation, scheduling, and result storage use this identity.
-- Step, Graph, and GraphPlan labels are only presentation.
+- Step and Graph labels are only presentation.
 
 An unlabeled Step uses its mounted StepId as its compiled display name. Lambdas
 therefore need no fabricated stable label.
@@ -256,16 +256,20 @@ one execution:
 
 ```python
 plan = GraphPlan(
-    label="build",
     graph=graph,
     execution_state=GraphExecutionState(),
     execution_control=GraphExecutionControl(),
 )
 ```
 
-It contains `label`, `graph`, `execution_state`, `execution_control`,
+It contains `graph`, `execution_state`, `execution_control`,
 `action_log`, and `execution_output`, and provides `compile()`, `run(...)`,
 and `require_result(step)`.
+
+The graph's name is declared only through `Graph.label`. Compilation, rendering,
+and execution output all use `graph.display_label`: the declared name, or
+`<unlabeled>` for an anonymous graph. This display value is not an identity;
+scheduling and result lookup use `StepId`. GraphPlan does not rename the graph.
 
 State is single-use. Control is independent by default; a host can explicitly
 share one control between sequential plans to share cancellation, not results.

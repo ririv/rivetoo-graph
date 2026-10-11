@@ -132,9 +132,8 @@ def test_graph_plan_rejects_pre_stopped_execution_control() -> None:
     control = GraphExecutionControl()
     control.request_stop()
     plan = GraphPlan(
-        label="root",
         graph=Graph.from_wiring(
-            wiring=(Step(action=lambda: calls.append("run")).wire(),),
+            wiring=(Step(action=lambda: calls.append("run")).wire(),), label="root"
         ),
         execution_control=control,
     )
@@ -164,8 +163,7 @@ def test_graph_plan_executes_python_and_native_actions_in_one_graph(
         label="verify",
     )
     plan = GraphPlan(
-        label="mixed",
-        graph=(prepare >> native >> verify).graph(),
+        graph=(prepare >> native >> verify).graph(label="mixed"),
         execution_state=GraphExecutionState(results=GraphResultStore()),
     )
 
@@ -192,7 +190,7 @@ def test_native_action_writes_to_bound_component_log(tmp_path: Path) -> None:
         label="native",
     )
     component = Graph(label="component", steps=(native,)).step()
-    plan = GraphPlan(label="native-log", graph=Graph(steps=(component,)))
+    plan = GraphPlan(graph=Graph(steps=(component,), label="native-log"))
     plan.bind_component_log_path(component, log_path)
 
     plan.run()
@@ -203,7 +201,7 @@ def test_native_action_writes_to_bound_component_log(tmp_path: Path) -> None:
 def test_bind_component_log_paths_resolves_one_batch(tmp_path: Path) -> None:
     first = Step(lambda: None, label="first")
     second = Step(lambda: None, label="second")
-    plan = GraphPlan(label="logs", graph=Graph(steps=(first, second)))
+    plan = GraphPlan(graph=Graph(steps=(first, second), label="logs"))
     first_log = tmp_path / "first.log"
     second_log = tmp_path / "second.log"
 
@@ -230,7 +228,7 @@ def test_native_action_failure_is_a_graph_action_failure() -> None:
     )
 
     with pytest.raises(RuntimeError, match="exited with status exit status: 7"):
-        GraphPlan(label="native-failure", graph=Graph(steps=(native,))).run()
+        GraphPlan(graph=Graph(steps=(native,), label="native-failure")).run()
 
 
 def test_async_graph_executor_runs_native_action_without_blocking_model_changes(
@@ -247,7 +245,7 @@ def test_async_graph_executor_runs_native_action_without_blocking_model_changes(
         label="native",
     )
 
-    GraphPlan(label="async-native", graph=Graph(steps=(native,))).run(
+    GraphPlan(graph=Graph(steps=(native,), label="async-native")).run(
         AsyncGraphRunOptions(concurrency=1)
     )
 
@@ -285,7 +283,6 @@ def test_graph_plan_run_executes_nested_graphs_in_topological_order() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=root,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1))
@@ -300,7 +297,7 @@ def test_graph_plan_run_executes_nested_graphs_in_topological_order() -> None:
 
 
 def test_graph_execution_state_cannot_be_reused() -> None:
-    plan = GraphPlan(label="root", graph=Graph(label="root"))
+    plan = GraphPlan(graph=Graph(label="root"))
 
     plan.run()
 
@@ -315,7 +312,6 @@ def test_step_action_preserves_default_argument_capture() -> None:
         captured.append(value)
 
     GraphPlan(
-        label="root",
         graph=Graph.from_wiring(
             label="root",
             wiring=(
@@ -353,7 +349,6 @@ def test_graph_plan_run_skips_marked_steps() -> None:
         results=GraphResultStore(),
     )
     GraphPlan(
-        label="root",
         graph=graph,
         execution_state=state,
     ).run(options=ThreadGraphRunOptions(workers=1))
@@ -368,7 +363,6 @@ def test_graph_plan_rejects_unknown_initial_skip_request() -> None:
 
     with pytest.raises(RuntimeError, match="unknown graph skip requests: 1"):
         GraphPlan(
-            label="root",
             graph=graph,
             execution_state=GraphExecutionState(initial_skip_requests={StepId((1,))}),
         ).run(options=ThreadGraphRunOptions(workers=1))
@@ -396,7 +390,6 @@ def test_graph_plan_run_uses_provided_state() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run()
@@ -420,7 +413,6 @@ def test_graph_plan_run_records_sync_step_results() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1))
@@ -446,7 +438,6 @@ def test_graph_plan_run_records_async_step_results() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1))
@@ -467,7 +458,6 @@ def test_graph_plan_run_records_none_result() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run()
@@ -493,7 +483,6 @@ def test_graph_plan_run_does_not_record_results_for_skipped_steps() -> None:
     )
 
     GraphPlan(
-        label="root",
         graph=graph,
         execution_state=state,
     ).run()
@@ -519,7 +508,6 @@ def test_graph_plan_run_does_not_record_results_for_failed_steps() -> None:
     state = GraphExecutionState(results=GraphResultStore())
     try:
         GraphPlan(
-            label="root",
             graph=graph,
             execution_state=state,
         ).run()
@@ -560,7 +548,6 @@ def test_parallel_graph_failure_does_not_request_global_stop() -> None:
 
     with pytest.raises(RuntimeError, match="boom"):
         GraphPlan(
-            label="root",
             graph=graph,
             execution_state=GraphExecutionState(results=GraphResultStore()),
             execution_control=execution_control,
@@ -592,7 +579,7 @@ def test_async_graph_failure_waits_for_started_steps() -> None:
         ),
     )
 
-    plan = GraphPlan(label="root", graph=graph)
+    plan = GraphPlan(graph=graph)
     with pytest.raises(RuntimeError, match="boom"):
         plan.run(options=AsyncGraphRunOptions(concurrency=2))
 
@@ -629,7 +616,6 @@ def test_execution_stop_does_not_dispatch_ready_successor(
 
     with pytest.raises(GraphExecutionStopped):
         GraphPlan(
-            label="root",
             graph=graph,
             execution_control=execution_control,
         ).run(options=options)
@@ -645,14 +631,13 @@ def test_step_failure_does_not_cancel_shared_execution_control() -> None:
         raise RuntimeError("boom")
 
     first_plan = GraphPlan(
-        label="build",
-        graph=Graph.from_wiring(wiring=(Step(action=_fail).wire(),)),
+        graph=Graph.from_wiring(wiring=(Step(action=_fail).wire(),), label="build"),
         execution_control=execution_control,
     )
     second_plan = GraphPlan(
-        label="package",
         graph=Graph.from_wiring(
             wiring=(Step(action=lambda: calls.append("package")).wire(),),
+            label="package",
         ),
         execution_control=execution_control,
     )
@@ -680,7 +665,6 @@ def test_graph_plan_reads_nested_result_by_step_ref() -> None:
     )
 
     plan = GraphPlan(
-        label="root",
         graph=root,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     )
@@ -708,7 +692,6 @@ def test_reused_subgraph_mounts_have_distinct_step_instances(
         wiring=(first.wire(), second.wire()),
     )
     plan = GraphPlan(
-        label="root",
         graph=root,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     )
@@ -752,7 +735,6 @@ def test_step_run_context_reads_parent_graph_step_results_by_ref() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=root,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run()
@@ -799,7 +781,6 @@ def test_runtime_condition_true_waits_for_source_step(mode: GraphMode) -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1), mode=mode)
@@ -835,7 +816,7 @@ def test_runtime_step_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
         ),
     )
 
-    GraphPlan(label="root", graph=graph).run(
+    GraphPlan(graph=graph).run(
         options=ThreadGraphRunOptions(workers=1),
         mode=mode,
     )
@@ -880,7 +861,7 @@ def test_runtime_edge_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
         ),
     )
 
-    GraphPlan(label="root", graph=graph).run(
+    GraphPlan(graph=graph).run(
         options=ThreadGraphRunOptions(workers=1),
         mode=mode,
     )
@@ -906,7 +887,7 @@ def test_execution_render_does_not_reevaluate_runtime_condition() -> None:
             ).wire(),
         ),
     )
-    plan = GraphPlan(label="root", graph=graph)
+    plan = GraphPlan(graph=graph)
 
     state = plan.run()
     rendered = render_graph_execution(graph, state, root_label="root")
@@ -951,7 +932,6 @@ def test_runtime_condition_false_does_not_require_source_result(
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1), mode=mode)
@@ -997,7 +977,6 @@ def test_runtime_condition_false_does_not_wait_for_source(mode: GraphMode) -> No
     )
 
     GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(
@@ -1048,7 +1027,7 @@ def test_parent_waits_for_all_steps_in_conditionally_connected_child(
         ),
     )
 
-    GraphPlan(label="root", graph=graph).run(
+    GraphPlan(graph=graph).run(
         options=ThreadGraphRunOptions(workers=4),
         mode=mode,
     )
@@ -1094,7 +1073,7 @@ def test_parent_prerequisite_blocks_all_conditionally_connected_child_steps(
         ),
     )
 
-    GraphPlan(label="root", graph=graph).run(
+    GraphPlan(graph=graph).run(
         options=ThreadGraphRunOptions(workers=4),
         mode=mode,
     )
@@ -1124,7 +1103,6 @@ def test_empty_child_graph_preserves_parent_dependency_boundary(
         empty_stage = Step(label="empty_stage", action=Graph(label="empty"))
         package = Step(label="package", action=_package)
         GraphPlan(
-            label="root",
             graph=Graph.from_wiring(
                 label="root",
                 wiring=(
@@ -1163,7 +1141,6 @@ def test_compiled_skipped_composite_preserves_prerequisite_boundary() -> None:
         ),
     )
     GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(initial_skip_requests={StepId((1,))}),
     ).run(
@@ -1211,7 +1188,7 @@ def test_parent_waits_for_all_steps_in_child_with_disabled_step(
         ),
     )
 
-    GraphPlan(label="root", graph=graph).run(
+    GraphPlan(graph=graph).run(
         options=ThreadGraphRunOptions(workers=4),
         mode=mode,
     )
@@ -1244,22 +1221,23 @@ def test_child_graph_observation_is_preserved(
     )
     graph = Graph.from_wiring(
         wiring=(Step(label="child", action=child).wire(),),
+        label="root",
         observation=GraphObservationMessages(
             before="before root",
             after_success="after root",
         ),
     )
 
-    GraphPlan(label="plan", graph=graph).run(
+    GraphPlan(graph=graph).run(
         options=replace(options, observer=_Observer()),
         mode=mode,
     )
 
     assert events == [
-        ("plan", (), "before"),
+        ("root", (), "before"),
         ("child", ("child",), "before"),
         ("child", ("child",), "after_success"),
-        ("plan", (), "after_success"),
+        ("root", (), "after_success"),
     ]
 
 
@@ -1279,9 +1257,7 @@ def test_serial_executor_runs_compiled_composite() -> None:
             ).wire(),
         ),
     )
-    state = SerialGraphExecutor().execute(
-        GraphPlan(label="root", graph=graph).compile()
-    )
+    state = SerialGraphExecutor().execute(GraphPlan(graph=graph).compile())
 
     assert calls == ["run"]
     assert state.executed_steps == [StepId((0, 0))]
@@ -1315,7 +1291,6 @@ def test_action_returned_graph_preserves_parent_scope(mode: GraphMode) -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(
@@ -1341,7 +1316,7 @@ def test_live_render_uses_runtime_path_for_action_returned_graph(
     graph = Graph.from_wiring(label="root", wiring=(stage.wire(),))
     state = GraphExecutionState(results=GraphResultStore())
 
-    GraphPlan(label="root", graph=graph, execution_state=state).run(
+    GraphPlan(graph=graph, execution_state=state).run(
         options=ThreadGraphRunOptions(workers=1),
         mode=mode,
     )
@@ -1387,7 +1362,6 @@ def test_async_runtime_condition_false_does_not_wait_for_source(
     )
 
     GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(
@@ -1419,7 +1393,7 @@ def test_async_executor_runs_independent_sync_steps_concurrently(
         ),
     )
 
-    GraphPlan(label="root", graph=graph).run(
+    GraphPlan(graph=graph).run(
         options=AsyncGraphRunOptions(concurrency=2),
         mode=mode,
     )
@@ -1457,7 +1431,6 @@ def test_returned_graph_inherits_component_log_path(
 
     component = Step(label="component", action=_make_child)
     plan = GraphPlan(
-        label="root",
         graph=Graph.from_wiring(
             label="root",
             wiring=(component.wire(),),
@@ -1491,7 +1464,6 @@ def test_static_component_graph_inherits_bound_log_path(
         ),
     )
     plan = GraphPlan(
-        label="root",
         graph=Graph.from_wiring(
             label="root",
             wiring=(component.wire(),),
@@ -1540,7 +1512,6 @@ def test_run_freezes_static_conditions_before_execution(mode: GraphMode) -> None
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1), mode=mode)
@@ -1576,7 +1547,6 @@ def test_step_when_false_skips_step_and_allows_downstream_continue(
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1), mode=mode)
@@ -1616,7 +1586,6 @@ def test_dynamic_step_when_false_skips_graph_step() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1))
@@ -1650,7 +1619,6 @@ def test_compiled_runtime_when_false_matches_dynamic_for_graph_step() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1), mode="compiled")
@@ -1688,7 +1656,6 @@ def test_compiled_runtime_when_true_activates_composite() -> None:
     )
 
     state = GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1), mode="compiled")
@@ -1725,7 +1692,6 @@ def test_graph_plan_run_logs_step_skip_by_condition(
     )
 
     GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1))
@@ -1752,7 +1718,6 @@ def test_graph_plan_run_writes_execution_render_to_run_log_dir(tmp_path: Path) -
     )
 
     GraphPlan(
-        label="root",
         graph=graph,
         execution_state=GraphExecutionState(results=GraphResultStore()),
         execution_output=TreeFileExecutionOutput(tmp_path),

@@ -29,13 +29,13 @@ def render_graph_plan(
         case "tree":
             return render_graph(
                 graph_plan.graph,
-                root_label=graph_plan.label,
+                root_label=graph_plan.graph.display_label,
                 mode=options.mode,
             )
         case "mermaid":
             return render_graph_mermaid(
                 graph_plan.graph,
-                root_label=graph_plan.label,
+                root_label=graph_plan.graph.display_label,
                 mode=options.mode,
             )
         case _:
