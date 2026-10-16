@@ -31,7 +31,7 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
 - 返回 `Graph` 时仍执行动态子图，完成后再结束当前 Step。
 
 不能只根据 `async def` 判断是否需要等待，因为普通函数也可以返回 awaitable。
-异步执行器仍使用其请求级事件循环，同步 action 通过 `asyncio.to_thread()` 执行，
+异步执行器在 `arun()` 中使用调用方已有事件循环，同步 action 通过 `asyncio.to_thread()` 执行，
 不受这条同步快速路径影响。日志作用域、异常传播、结果存储和 Step 生命周期保持不变。
 
 各项开销的分离测量见 [Step 开销基准](./step_overhead_benchmark.md)。
@@ -104,6 +104,14 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
 - 未传 `observer` 时，不会发出 graph observation
 - `GraphExecution.run(options=..., mode=...)` 接受它们的联合类型
 
+已有事件循环时使用：
+
+```python
+state = await GraphExecution(graph).arun(AsyncGraphRunOptions(concurrency=8))
+```
+
+同步 `run(AsyncGraphRunOptions(...))` 与 `arun()` 复用同一异步实现。
+
 ## 执行控制
 
 `GraphExecutionControl` 保存停止状态和停止处理器，不保存 step 结果。普通 action 或
@@ -138,6 +146,19 @@ GraphExecution 各自持有独立的 `GraphExecutionState`；共享的只有请�
 普通失败仍会从 `run()` 抛出异常；调用方若捕获异常后主动运行第二个 GraphExecution，control 不会阻止它。
 两个 GraphExecution 间需要成功依赖时，应组合成一张图或由调用方明确处理，不能用共享 control 代替依赖边。
 信号处理、子进程终止和多个 GraphExecution 的请求级协调由宿主负责，不属于 Graph core。
+
+action 可以调用 `ctx.control.stop_requested()` 或 `ctx.control.require_running()` 协作
+响应停止。取消等待 `arun()` 的 task 会请求停止，并等待已启动动作清理退出。停止
+处理器在锁外执行，停止后才注册的处理器立即执行；所有处理器执行完后聚合其异常。
+
+## 步骤执行事件
+
+通过 `GraphExecution(events=...)` 显式传入 `StepEventSink`，接收包含 StepId、标签路径
+及 `StepExecutionPhase` 的 `StepExecutionEvent`：`STARTED`、`COMPLETED`、`FAILED`、
+`BLOCKED`、`SKIPPED`。静态子图、动态子图和原生动作使用同一接口。通知发生在状态
+提交之后，组合边界的事件不依赖展示模式。回调同步、串行执行；回调失败以
+`GraphEventDeliveryError` 停止执行，不撤销已提交状态。未订阅时不创建事件对象或事件
+标签索引。原有 `GraphObserver` 继续独立负责图级展示消息。示例见[核心模型](./core_model.md)。
 
 ## 失败传播
 
@@ -306,7 +327,11 @@ Graph 已提供线程与异步两种受控调度后端，但仍保持以下边�
 - 只调度拓扑上已经 ready 的节点
 - 显式取消后停止派发新节点；普通失败按依赖关系传播
 - 已经开始执行的同步 worker 或异步 task 不会被 Graph 强制取消
-- 运行期返回图的嵌套 session 暂不共享外层 session 的全局 ready 队列
+- 运行期返回图仍使用独立 Rust session，由同一驱动分配全局动作名额
+- 等待子图的父步骤不占名额，所有 Python 子图共用一个线程池或事件循环
+- Python 与 Rust 原生叶子动作合计受根执行的并发上限约束
+- 节点 ready 判定仍在 Rust，串行嵌套 session 使用显式栈推进
 - action 对宿主共享状态的并发写入安全由宿主负责
 
-因此 Graph 提供的是 DAG 调度并发，不是宿主资源、进程或事务的全局并发管理器。
+该上限不统计 action 内部自行创建的线程、子进程或模型请求；Graph 提供的是 DAG
+调度并发，不是宿主资源、进程或事务的全局并发管理器。

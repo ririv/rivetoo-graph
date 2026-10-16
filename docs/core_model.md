@@ -228,9 +228,17 @@ def select_graph(run_ctx: StepRunContext) -> Graph:
     return graph_for(selected)
 ```
 
-The returned graph is compiled and executed as an explicit subgraph in a nested
-execution session. Its boundary is preserved. That nested session currently does
-not share the outer session's global concurrency budget.
+The returned graph is compiled into a nested session managed by the same execution
+driver. The parent Step completes after the child graph; while waiting it occupies
+no action slot. All Python sessions share one thread pool or the caller's event
+loop. Root, runtime-created, and Rust-native actions share the same `workers` or
+`concurrency` limit. Serial execution uses an explicit stack rather than recursive
+executor calls. Python-only sessions create no empty Rust worker pool.
+
+The limit counts active Graph leaf actions, not threads, subprocesses, or requests
+created inside an action. Child boundaries, result scopes, capability ports, and
+failure propagation are preserved. This does not permit arbitrary edits to an
+already running graph.
 
 ## Conditions
 
@@ -262,8 +270,8 @@ execution = GraphExecution(
 )
 ```
 
-It contains `graph`, `execution_state`, `execution_control`,
-`action_log`, and `execution_output`, and provides `compile()`, `run(...)`,
+It contains `graph`, `shared`, `execution_state`, `execution_control`,
+`action_log`, and `execution_output`, and provides `compile()`, `run(...)`, `arun(...)`,
 and `require_result(step)`.
 
 The graph's name is declared only through `Graph.label`. Compilation, rendering,
@@ -278,6 +286,18 @@ Once stopped, control cannot be reset.
 GraphExecution does not read global host logging or stop state. By default it neither
 connects a host action logger nor writes an execution file. For file output,
 explicitly pass `TreeFileExecutionOutput(output_dir)`.
+
+Use the asynchronous entry point inside an existing event loop:
+
+```python
+state = await GraphExecution(graph=graph).arun(
+    AsyncGraphRunOptions(concurrency=8),
+)
+```
+
+`arun()` and the lower-level `AsyncGraphExecutor.aexecute()` use the caller's loop.
+Synchronous `run(AsyncGraphRunOptions(...))` runs that same asynchronous path in
+its own event loop.
 
 ## GraphCompilation
 
@@ -328,6 +348,23 @@ StepRunContext combines `view: StepReadContext`, `control: StepControl`, and
 `value/require_value`, `has_result`, `step_id`, `label_path`, and
 `graph_label_path`. Side-effectful skipping goes through
 `run_ctx.control.skip_step(step_id)` or `skip_steps(step_ids)`.
+
+Long-running actions can call `ctx.control.stop_requested()` or
+`ctx.control.require_running()` between iterations and external calls:
+
+```python
+async def task(ctx: StepRunContext) -> None:
+    for item in items:
+        ctx.control.require_running()
+        await process_item(item)
+```
+
+The host requests a stop through `execution.execution_control.request_stop()`, or
+by cancelling the task awaiting `arun()`. The driver stops dispatching and waits
+for started actions to clean up. It does not kill Python functions or roll back
+side effects: an action that never checks must finish itself. Stop handlers run
+outside the control lock; handlers registered after a stop run immediately.
+Handler failures are collected after all handlers have been called.
 
 Bind logs when constructing the execution:
 
@@ -396,6 +433,33 @@ GraphObservationMessages contains presentation-only `before` and
 `after_success` messages. An injected GraphObserver receives GraphObservationEvent
 values for tracing, timing, and display. It must not change results or replace
 explicit Steps.
+
+Subscribe separately to step transitions when needed:
+
+```python
+from rivetoo_graph import GraphExecution, StepExecutionEvent
+
+
+class Events:
+    def emit(self, event: StepExecutionEvent) -> None:
+        print(event.step_id, event.label_path, event.phase)
+
+
+execution = GraphExecution(graph=graph, events=Events())
+execution.run()
+```
+
+`StepExecutionPhase` contains `STARTED`, `COMPLETED`, `FAILED`, `BLOCKED`, and
+`SKIPPED`. Events follow committed transitions, using mounted identities and label
+paths for static subgraphs, runtime-created subgraphs, Python, and native actions.
+Composite start/completion events consume no action slot and do not depend on the
+dynamic/compiled presentation mode. Blocked and skipped nodes need no start event.
+
+Callbacks execute synchronously and serially; keep them short, as their cost is
+part of execution time. A callback failure raises `GraphEventDeliveryError` and
+stops execution, without relabeling a completed Step as failed. Without `events`,
+no events, label index, message text, or result copies are constructed. Events do
+not implement messaging, persistence, or replay-based recovery.
 
 GraphExecutionState records executed/completed steps, entered/completed composites,
 skips, failures, blocked nodes, condition results, and an optional GraphResultStore.

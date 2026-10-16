@@ -294,7 +294,7 @@ Step(
 ## 运行时返回子图
 
 LeafAction 可以在运行时返回 Graph。runtime 会把返回值作为当前 Step 的显式子图
-编译并在嵌套 execution session 中执行：
+编译成嵌套 execution session，交给本次执行的同一个驱动调度：
 
 ```python
 def select_graph(run_ctx: StepRunContext) -> Graph:
@@ -302,8 +302,14 @@ def select_graph(run_ctx: StepRunContext) -> Graph:
     return graph_for(selected)
 ```
 
-这个能力用于先读取运行时结果，再选择下一层结构。它不会展开或改写返回的 Graph，
-也不会创建隐藏执行入口。
+这个能力用于先读取运行时结果，再选择下一层结构。父 Step 等待子图整体完成后才完成；
+等待期间不占动作名额。线程执行的所有 Python 子图共用一个线程池，异步执行的所有
+子图共用调用方的事件循环。根图、动态子图和 Rust 原生 action 合计受同一
+`workers` / `concurrency` 上限约束；串行执行使用显式栈，不递归调用执行器。
+
+此上限计算正在执行的 Graph 叶子动作，不限制 action 自己启动的线程、子进程或模型
+请求数量。它保持已有的子图边界、结果引用、能力端口和失败传播规则，不会修改已经
+声明的图或允许任意向运行中的图插入节点。纯 Python session 不创建空的 Rust 线程池。
 
 ## 条件
 
@@ -352,6 +358,7 @@ execution = GraphExecution(
 它包含：
 
 - `graph: Graph`
+- `shared`：显式注入的业务共享对象
 - `execution_state: GraphExecutionState`
 - `execution_control: GraphExecutionControl`
 - `action_log: GraphActionLog`
@@ -361,6 +368,7 @@ execution = GraphExecution(
 
 - `compile()`
 - `run(...)`
+- `await arun(...)`
 - `require_result(step)`
 
 图名只在 `Graph.label` 声明。编译、渲染和执行输出统一读取 `graph.display_label`：
@@ -375,6 +383,17 @@ execution = GraphExecution(
 `GraphExecution` 本身不读取宿主的全局日志目录、日志上下文或停止状态。独立使用时，
 `action_log` 不接入宿主日志设施，`execution_output` 也不写外部文件；需要文件输出时，
 宿主显式传入 Graph 提供的 `TreeFileExecutionOutput(output_dir)`。
+
+已有事件循环的程序直接使用异步入口：
+
+```python
+state = await GraphExecution(graph=graph).arun(
+    AsyncGraphRunOptions(concurrency=8),
+)
+```
+
+`arun()` 不创建嵌套事件循环；底层 `AsyncGraphExecutor.aexecute()` 同样可被等待。
+同步 `run(AsyncGraphRunOptions(...))` 则在自己的事件循环中调用同一条异步执行路径。
 
 ## `GraphCompilation`
 
@@ -461,6 +480,23 @@ ParentGraphStepRef(
 
 - `skip_step(step_id)`
 - `skip_steps(step_ids)`
+- `stop_requested()`：读取当前执行作用域是否已请求停止
+- `require_running()`：已请求停止时抛出 `GraphExecutionStopped`
+
+长任务应在自己的循环和外部调用之间协作检查停止状态：
+
+```python
+async def task(ctx: StepRunContext) -> None:
+    for item in items:
+        ctx.control.require_running()
+        await process_item(item)
+```
+
+宿主通过 `execution.execution_control.request_stop()` 发起停止，也可以取消正在等待
+`arun()` 的 asyncio task。驱动会停止派发新动作，并等待已经启动的动作清理退出；
+不会强杀 Python 函数或自动回滚副作用。action 若一直不检查停止状态，仍须等它自行
+结束。停止处理器在锁外执行，停止后才注册的处理器也会立即执行；多个处理器报错时
+全部调用后聚合异常。
 
 日志路径在构造执行对象时声明：
 
@@ -526,6 +562,31 @@ assert progress.completed == 2
 
 runtime 通过外部注入的 `GraphObserver` 发出 `GraphObservationEvent`。observer 用于
 trace、timing 和展示，不修改执行结果，也不替代显式 Step。
+
+需要跟踪步骤状态时，显式订阅独立的执行事件：
+
+```python
+from rivetoo_graph import GraphExecution, StepExecutionEvent
+
+
+class Events:
+    def emit(self, event: StepExecutionEvent) -> None:
+        print(event.step_id, event.label_path, event.phase)
+
+
+execution = GraphExecution(graph=graph, events=Events())
+execution.run()
+```
+
+`StepExecutionPhase` 有 `STARTED`、`COMPLETED`、`FAILED`、`BLOCKED`、`SKIPPED`。
+状态已提交后才通知；静态子图、动态子图、Python 和原生步骤都使用挂载后的身份与
+标签路径。组合边界的开始/完成事件不占动作名额，也不依赖 dynamic/compiled 展示模式。
+被阻塞或跳过的节点不会先收到开始事件。
+
+事件回调同步、串行执行，应保持短小，耗时会计入执行时间。回调报错抛出
+`GraphEventDeliveryError` 并停止执行；不会把已经完成的 Step 重新标成失败。
+未配置 `events` 时不构造事件、标签索引或消息文本，也不复制结果表。事件只描述运行
+状态，不负责消息传递、持久化或从历史状态恢复。
 
 `GraphExecutionState` 只服务一次执行，记录：
 

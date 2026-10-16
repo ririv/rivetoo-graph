@@ -27,8 +27,8 @@ Serial and thread drivers invoke a Python action, then inspect its return value:
 - A returned Graph executes as a dynamic subgraph before the outer Step completes.
 
 Checking only `async def` is insufficient: a synchronous function can return an
-awaitable. The async driver uses its own execution event loop, awaiting async
-actions and bridging synchronous calls with `asyncio.to_thread()`.
+awaitable. The async driver awaits async actions and bridges synchronous calls
+with `asyncio.to_thread()`. `arun()` uses the caller's existing event loop.
 See the [Step overhead benchmark](./step_overhead_benchmark.md).
 
 ## Conditional execution
@@ -74,6 +74,10 @@ Both concurrency limits default to 1. Observer is optional; without one, graph
 observation is not emitted. Pass either option type to
 `GraphExecution.run(options=..., mode=...)`.
 
+Inside an existing event loop, use
+`await GraphExecution(graph).arun(AsyncGraphRunOptions(concurrency=8))`.
+Both entry points use the same asynchronous implementation.
+
 ## Execution control
 
 GraphExecutionControl holds stop state and stop handlers, not action results.
@@ -107,6 +111,24 @@ failure and explicitly starts the next execution, control does not prevent it.
 For success dependencies, compose one graph or explicitly handle failure.
 
 Process signals and cross-execution request management belong to the host.
+
+Actions can cooperatively check `ctx.control.stop_requested()` or call
+`ctx.control.require_running()`. Cancelling the task awaiting `arun()` requests
+a stop and waits for started actions to clean up. Stop handlers run outside the
+control lock; registering after a stop invokes the handler immediately. All stop
+handlers are called before any handler failures are raised together.
+
+## Step execution events
+
+Pass `events=StepEventSink` to GraphExecution to receive `StepExecutionEvent`
+values with a StepId, label path, and `StepExecutionPhase`:
+`STARTED`, `COMPLETED`, `FAILED`, `BLOCKED`, or `SKIPPED`.
+Static and runtime-generated subgraphs and Rust-native actions use the same
+interface. Events describe committed transitions; composite events do not depend
+on presentation mode. An event callback is synchronous and serialized. A callback
+failure stops the execution with `GraphEventDeliveryError`, preserving the
+transition already committed. With no subscription, no event objects or event
+label index are created. GraphObserver remains the separate presentation interface.
 
 ## Failure propagation
 
@@ -229,9 +251,13 @@ Only ready nodes are dispatched. Ordinary failures stop dependent work, while
 unrelated ready nodes continue. Explicit cancellation stops new dispatch.
 Already-running workers/tasks are not forcibly cancelled by Graph.
 
-Runtime-returned subgraphs use nested sessions and do not yet share the outer
-session's global ready queue or concurrency budget. Safety of concurrent writes
-to host state remains the host's responsibility.
+Runtime-returned subgraphs use nested Rust sessions coordinated by one driver.
+Python sessions share one pool or event loop, and all active Python/native leaves
+share the root concurrency budget. Waiting parents retain their dependency
+boundary without occupying action capacity. Serial execution uses an explicit
+session stack. Per-node readiness remains in Rust; the driver allocates capacity
+between sessions. Safety of concurrent host-state writes remains the host's
+responsibility. The budget does not limit work spawned inside individual actions.
 
 Do not rely on ordering between independent Steps. Declare meaningful ordering
 with `wire(after=...)`, edges, or `>>`. Graph manages DAG concurrency, not global

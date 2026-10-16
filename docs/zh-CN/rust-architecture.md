@@ -104,7 +104,9 @@ Python 在有状态变化时通过 `start/advance` 与 session
 声明期已知子图由 Rust 编译为 composite 与 leaf；子图边界不会被隐式删除。action 在
 运行期返回的新 `Graph` 无法提前编译，因此会以当前 step id、label path 和父作用域作为
 显式输入，再次进入同一个 Rust 编译器，并创建嵌套 session，而不是回到 Python dynamic scheduler。
-嵌套 session 当前不共享外层的全局并发预算；这与声明期挂载的子图不同。
+Python driver 协调活跃 session 并分配统一动作预算，节点 ready 判定和状态转换仍由
+Rust 负责。父 action 等待子图期间不占动作名额；Python session 共用一个线程池或
+事件循环，纯 Python session 不创建空的 Rust worker 池。
 
 `mode="dynamic"` 与 `mode="compiled"` 目前保留的是兼容的展示和 composite 记录语义，
 不再代表两套执行引擎。capability binding 在两种模式下进入同一 lowering。

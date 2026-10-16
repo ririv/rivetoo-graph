@@ -49,6 +49,7 @@ performance guarantee for the latest release.
 
 - [Recipe-scale benchmark](./recipe_scale_benchmark.md)
 - [Step overhead benchmark](./step_overhead_benchmark.md)
+- [Workflow runtime and concurrency benchmark](./workflow_runtime_benchmark.md)
 
 ## Core boundaries
 
@@ -71,8 +72,8 @@ interfaces. There are no implicit branches for a particular host application.
 
 ## Current limitations
 
-- A graph returned by an action creates a nested session. It does not yet share
-  the outer session's global concurrency budget.
+- Runtime-created graphs receive nested sessions under the root action budget;
+  work created inside an action is outside that budget.
 - `GraphExecutionState` is single-use, with no reset or reuse operation.
 - The runtime does not aggregate host-domain results.
 - Runtime-generated subgraphs cannot be compiled in advance. Once returned, they

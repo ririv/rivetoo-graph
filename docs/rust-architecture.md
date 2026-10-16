@@ -85,8 +85,10 @@ batches when state changes:
 
 Known subgraphs compile as composites and leaves without losing their boundaries.
 A graph returned by an action is compiled later with the current path and ancestor
-scopes, in a nested session. Nested sessions currently do not share the outer
-session's global concurrency budget.
+scopes, in a nested Rust session. The Python driver coordinates active sessions
+and allocates one global action budget; node readiness and transitions remain in
+Rust. Waiting parent actions consume no worker slot. Python sessions share one
+pool or event loop, and Python-only sessions create no empty native worker pool.
 
 Dynamic and compiled modes retain different presentation/composite-recording
 behavior, not different execution engines.

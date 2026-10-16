@@ -46,6 +46,7 @@ from rivetoo_graph import Graph, GraphExecution, Step
 
 - [大规模 Recipe 图基准](./recipe_scale_benchmark.md)
 - [Step 开销基准](./step_overhead_benchmark.md)
+- [工作流运行与并发基准](./workflow_runtime_benchmark.md)
 
 ## 核心边界
 
@@ -81,7 +82,7 @@ Graph core 不知道任何具体宿主领域，例如：
 
 ## 当前限制
 
-- 运行期返回的图会创建嵌套 session，暂不共享外层 session 的全局并发预算
+- 动态子图与根图共享动作预算，但 action 内部自行启动的工作不受此预算控制
 - `GraphExecutionState` 只允许一次执行，不提供 reset 或复用语义
 - Graph runtime 不聚合宿主领域结果
 - 运行时返回的子图无法提前编译，但返回后会立即进入同一 Rust 编译器
