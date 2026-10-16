@@ -30,6 +30,7 @@ from rivetoo_graph import (
     SerialGraphExecutor,
     StaticCondition,
     StaticConditionEvaluator,
+    StaticConditions,
     Step,
     StepId,
     StepRunContext,
@@ -1503,14 +1504,14 @@ def test_run_freezes_static_conditions_before_execution(mode: GraphMode) -> None
             archive.wire(
                 after=(
                     prepare,
-                    ConditionalPrerequisite(
-                        step=android_shim,
-                        condition=_condition("android"),
-                    ),
+                    android_shim,
                 )
             ),
         ),
-        static_condition_eval=_ConditionEvaluator(active=frozenset({"android"})),
+        static=StaticConditions(
+            evaluator=_ConditionEvaluator(active=frozenset({"android"})),
+            conditions={(android_shim, archive): _condition("android")},
+        ),
     )
 
     state = GraphExecution(

@@ -4,7 +4,6 @@ use std::sync::Arc;
 use action::NativeActionHandle;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use rivetoo_graph::{
     CapabilityBinding, ConditionId, DeclarationNode, DeclarationPrerequisite, DeclaredGraph,
     DeclaredNodeKind, GraphDeclaration, GraphId, NodeActivation, NodeId, RuntimeCondition,
@@ -19,22 +18,17 @@ struct PythonTypes<'py> {
     conditional_edge: Bound<'py, PyAny>,
     capability_binding: Bound<'py, PyAny>,
     runtime_condition: Bound<'py, PyAny>,
-    static_condition: Bound<'py, PyAny>,
-    evaluate_static_condition: Bound<'py, PyAny>,
 }
 
 impl<'py> PythonTypes<'py> {
     fn import(py: Python<'py>) -> PyResult<Self> {
         let model = py.import("rivetoo_graph.model")?;
         let capability = py.import("rivetoo_graph.capability")?;
-        let static_condition = py.import("rivetoo_graph.static_condition")?;
         Ok(Self {
             graph: model.getattr("Graph")?,
             conditional_edge: model.getattr("ConditionalEdge")?,
             capability_binding: capability.getattr("CapabilityBinding")?,
             runtime_condition: model.getattr("RuntimeCondition")?,
-            static_condition: static_condition.getattr("StaticCondition")?,
-            evaluate_static_condition: static_condition.getattr("evaluate_static_condition")?,
         })
     }
 }
@@ -182,6 +176,9 @@ impl<'py> Collector<'py> {
         });
 
         let steps = source_graph.getattr("steps")?;
+        let static_bindings = source_graph.getattr("_static_bindings")?;
+        // 无静态规则时不逐节点跨语言查询；有规则时按哈希索引 O(1) 查找。
+        let has_static_bindings = static_bindings.len()? != 0;
         let mut step_values = Vec::new();
         for step in steps.try_iter()? {
             step_values.push(step?);
@@ -205,8 +202,8 @@ impl<'py> Collector<'py> {
             } else {
                 label_object.extract::<String>()?
             };
-            let when = step.getattr("when")?;
-            let active = parent_active && self.static_node_active(source_graph, &when)?;
+            let active = parent_active
+                && (!has_static_bindings || Self::static_node_active(&static_bindings, step)?);
             let action = step.getattr("action")?;
             self.nodes.push(NodeRecord {
                 source_step: Some(step.clone().unbind()),
@@ -241,7 +238,7 @@ impl<'py> Collector<'py> {
             )?;
         }
 
-        self.collect_node_conditions(source_graph, graph_index, parent_active)?;
+        self.collect_node_conditions(graph_index, parent_active)?;
         self.collect_edges(source_graph, graph_index, parent_active)?;
         Ok(graph_index)
     }
@@ -350,41 +347,17 @@ impl<'py> Collector<'py> {
     }
 
     fn static_node_active(
-        &self,
-        source_graph: &Bound<'py, PyAny>,
-        condition: &Bound<'py, PyAny>,
+        bindings: &Bound<'py, PyAny>,
+        step: &Bound<'py, PyAny>,
     ) -> PyResult<bool> {
-        if condition.is_none() || !condition.is_instance(&self.types.static_condition)? {
+        let binding = bindings.call_method1("get", (step,))?;
+        if binding.is_none() {
             return Ok(true);
         }
-        self.evaluate_static(source_graph, condition)
+        binding.call_method0("evaluate")?.extract()
     }
 
-    fn evaluate_static(
-        &self,
-        source_graph: &Bound<'py, PyAny>,
-        condition: &Bound<'py, PyAny>,
-    ) -> PyResult<bool> {
-        let evaluator = source_graph.getattr("static_condition_eval")?;
-        if evaluator.is_none() {
-            return Err(PyValueError::new_err(
-                "graph contains static condition but static_condition_eval is None",
-            ));
-        }
-        let kwargs = PyDict::new(self.py);
-        kwargs.set_item("static_condition_eval", evaluator)?;
-        self.types
-            .evaluate_static_condition
-            .call((condition,), Some(&kwargs))?
-            .extract()
-    }
-
-    fn collect_node_conditions(
-        &mut self,
-        source_graph: &Bound<'py, PyAny>,
-        graph_index: usize,
-        parent_active: bool,
-    ) -> PyResult<()> {
+    fn collect_node_conditions(&mut self, graph_index: usize, parent_active: bool) -> PyResult<()> {
         let node_indexes = self.graphs[graph_index].local_step_order.clone();
         for node_index in node_indexes {
             if !parent_active
@@ -400,11 +373,10 @@ impl<'py> Collector<'py> {
             if when.is_instance(&self.types.runtime_condition)? {
                 let condition = self.register_runtime_condition(&when, graph_index)?;
                 self.set_node_when(node_index, condition);
-            } else if !when.is_none() && !when.is_instance(&self.types.static_condition)? {
+            } else if !when.is_none() {
                 return Err(PyValueError::new_err("unsupported graph step condition"));
             }
         }
-        let _ = source_graph;
         Ok(())
     }
 
@@ -415,16 +387,26 @@ impl<'py> Collector<'py> {
         graph_active: bool,
     ) -> PyResult<()> {
         let edges = source_graph.getattr("edges")?;
+        let static_bindings = source_graph.getattr("_static_bindings")?;
+        let has_static_bindings = static_bindings.len()? != 0;
         for edge in edges.try_iter()? {
             let edge = edge?;
             if edge.is_instance(&self.types.capability_binding)? {
                 self.collect_capability_binding(&edge, graph_index)?;
                 continue;
             }
-            let source = self.require_local_node(graph_index, &edge.getattr("source")?)?;
-            let target = self.require_local_node(graph_index, &edge.getattr("target")?)?;
+            let source_step = edge.getattr("source")?;
+            let target_step = edge.getattr("target")?;
+            let source = self.require_local_node(graph_index, &source_step)?;
+            let target = self.require_local_node(graph_index, &target_step)?;
             if !graph_active || matches!(self.node_activation(target), NodeActivation::Inactive) {
                 continue;
+            }
+            if has_static_bindings {
+                let binding = static_bindings.call_method1("get", ((source_step, target_step),))?;
+                if !binding.is_none() && !binding.call_method0("evaluate")?.extract::<bool>()? {
+                    continue;
+                }
             }
             let prerequisite = if edge.is_instance(&self.types.conditional_edge)? {
                 let condition = edge.getattr("condition")?;
@@ -432,11 +414,6 @@ impl<'py> Collector<'py> {
                     DeclarationPrerequisite::RuntimeConditional {
                         node: NodeId::new(source),
                         condition: self.register_runtime_condition(&condition, graph_index)?,
-                    }
-                } else if condition.is_instance(&self.types.static_condition)? {
-                    DeclarationPrerequisite::StaticConditional {
-                        node: NodeId::new(source),
-                        enabled: self.evaluate_static(source_graph, &condition)?,
                     }
                 } else {
                     return Err(PyValueError::new_err("unsupported graph edge condition"));

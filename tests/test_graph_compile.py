@@ -21,6 +21,7 @@ from rivetoo_graph import (
     ParentGraphStepRef,
     StaticCondition,
     StaticConditionEvaluator,
+    StaticConditions,
     Step,
     StepId,
     ThreadGraphRunOptions,
@@ -477,14 +478,14 @@ def test_compile_graph_resolves_static_conditions() -> None:
             archive.wire(
                 after=(
                     prepare,
-                    ConditionalPrerequisite(
-                        step=android_shim,
-                        condition=_condition("android"),
-                    ),
+                    android_shim,
                 )
             ),
         ),
-        static_condition_eval=_ConditionEvaluator(active=frozenset({"android"})),
+        static=StaticConditions(
+            evaluator=_ConditionEvaluator(active=frozenset({"android"})),
+            conditions={(android_shim, archive): _condition("android")},
+        ),
     )
 
     compilation = compile_graph(graph, root_label="root")
@@ -506,15 +507,15 @@ def test_compile_graph_removes_static_condition_edge_when_false() -> None:
             archive.wire(
                 after=(
                     prepare,
-                    ConditionalPrerequisite(
-                        step=android_shim,
-                        condition=_condition("android"),
-                    ),
+                    android_shim,
                 )
             ),
         ),
         label="root",
-        static_condition_eval=_ConditionEvaluator(active=frozenset({"ios"})),
+        static=StaticConditions(
+            evaluator=_ConditionEvaluator(active=frozenset({"ios"})),
+            conditions={(android_shim, archive): _condition("android")},
+        ),
     )
 
     compilation = compile_graph(graph, root_label="root")
@@ -561,28 +562,6 @@ def test_compile_graph_preserves_runtime_condition_edge() -> None:
     )
 
 
-def test_compile_graph_rejects_static_condition_edge_without_evaluator() -> None:
-    android_shim = Step(label="android_shim", action=lambda: None)
-    archive = Step(label="archive", action=lambda: None)
-    graph = Graph.from_wiring(
-        (
-            android_shim.wire(),
-            archive.wire(
-                after=(
-                    ConditionalPrerequisite(
-                        step=android_shim,
-                        condition=_condition("android"),
-                    ),
-                )
-            ),
-        ),
-        label="root",
-    )
-
-    with pytest.raises(GraphError, match="static_condition_eval is None"):
-        compile_graph(graph, root_label="root")
-
-
 def test_compile_graph_accepts_static_condition_eval_function() -> None:
     def _eval(condition: StaticCondition) -> bool:
         return condition.payload == _condition("android").payload
@@ -598,14 +577,13 @@ def test_compile_graph_accepts_static_condition_eval_function() -> None:
             archive.wire(
                 after=(
                     prepare,
-                    ConditionalPrerequisite(
-                        step=android_shim,
-                        condition=_condition("android"),
-                    ),
+                    android_shim,
                 )
             ),
         ),
-        static_condition_eval=_eval,
+        static=StaticConditions(
+            evaluator=_eval, conditions={(android_shim, archive): _condition("android")}
+        ),
     )
 
     compilation = compile_graph(graph, root_label="root")
@@ -630,24 +608,24 @@ def test_compile_graph_handles_builtin_static_condition_combinators() -> None:
             archive.wire(
                 after=(
                     prepare,
-                    ConditionalPrerequisite(
-                        step=android_shim,
-                        condition=all_(
-                            _condition("android"),
-                            not_(_condition("ios")),
-                        ),
-                    ),
-                    ConditionalPrerequisite(
-                        step=shared_only,
-                        condition=any_(
-                            _condition("ios"),
-                            _condition("android"),
-                        ),
-                    ),
+                    android_shim,
+                    shared_only,
                 )
             ),
         ),
-        static_condition_eval=_ConditionEvaluator(active=frozenset({"android"})),
+        static=StaticConditions(
+            evaluator=_ConditionEvaluator(active=frozenset({"android"})),
+            conditions={
+                (android_shim, archive): all_(
+                    _condition("android"),
+                    not_(_condition("ios")),
+                ),
+                (shared_only, archive): any_(
+                    _condition("ios"),
+                    _condition("android"),
+                ),
+            },
+        ),
     )
 
     compilation = compile_graph(graph, root_label="root")
@@ -719,14 +697,14 @@ def test_graph_execution_compile_supports_static_and_runtime_conditions() -> Non
                             reads=(probe,),
                         ),
                     ),
-                    ConditionalPrerequisite(
-                        step=android_shim,
-                        condition=_condition("android"),
-                    ),
+                    android_shim,
                 )
             ),
         ),
-        static_condition_eval=_ConditionEvaluator(active=frozenset({"android"})),
+        static=StaticConditions(
+            evaluator=_ConditionEvaluator(active=frozenset({"android"})),
+            conditions={(android_shim, build): _condition("android")},
+        ),
     )
 
     compilation = GraphExecution(graph=graph).compile()
@@ -777,7 +755,6 @@ def test_compile_graph_removes_static_disabled_step_and_dependency() -> None:
     android_only = Step(
         label="android_only",
         action=LeafAction(fn=lambda: None),
-        when=_condition("android"),
     )
     archive = Step(label="archive", action=LeafAction(fn=lambda: None))
     graph = Graph.from_wiring(
@@ -787,7 +764,10 @@ def test_compile_graph_removes_static_disabled_step_and_dependency() -> None:
             android_only.wire(),
             archive.wire(after=(prepare, android_only)),
         ),
-        static_condition_eval=_ConditionEvaluator(active=frozenset({"ios"})),
+        static=StaticConditions(
+            evaluator=_ConditionEvaluator(active=frozenset({"ios"})),
+            conditions={android_only: _condition("android")},
+        ),
     )
 
     compilation = compile_graph(graph, root_label="root")

@@ -16,7 +16,6 @@ from ..compile import (
     compile_graph,
 )
 from ..model import (
-    Condition,
     ConditionalEdge,
     ConditionalPrerequisite,
     Graph,
@@ -93,8 +92,17 @@ def render_graph_after_suffix(
     incoming = graph.incoming_edges(step)
     if not incoming:
         return ""
-    deps = ", ".join(format_graph_edge(edge, step_ids=step_ids) for edge in incoming)
+    deps = ", ".join(
+        format_graph_edge(edge, graph=graph, step_ids=step_ids) for edge in incoming
+    )
     return f" [after: {deps}]"
+
+
+def render_static_suffix(graph: Graph, step: Step) -> str:
+    binding = graph._static_bindings.get(step)
+    if binding is None:
+        return ""
+    return f" [static: {format_static_condition(binding.condition)}]"
 
 
 def render_graph_capability_suffix(graph: Graph, step: Step) -> str:
@@ -116,9 +124,13 @@ def render_graph_capability_suffix(graph: Graph, step: Step) -> str:
 def format_graph_edge(
     edge: GraphEdge,
     *,
+    graph: Graph,
     step_ids: Mapping[Step, StepId],
 ) -> str:
     dep_id = resolve_step_label(edge.source, step_ids[edge.source])
+    binding = graph._static_bindings.get((edge.source, edge.target))
+    if binding is not None:
+        dep_id += f" (static: {format_static_condition(binding.condition)})"
     if isinstance(edge, ConditionalEdge):
         return f"{dep_id} (条件边: {condition_name(edge.condition)})"
     return dep_id
@@ -165,7 +177,7 @@ def prerequisite_step_label(dep: StepPrerequisite) -> str | None:
 
 
 def condition_name(
-    condition: Condition | CompiledRuntimeCondition,
+    condition: StaticCondition | RuntimeCondition | CompiledRuntimeCondition,
 ) -> str:
     if isinstance(
         condition,

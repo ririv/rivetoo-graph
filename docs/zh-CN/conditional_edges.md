@@ -7,7 +7,7 @@
 条件边表达“B 仅在条件成立时依赖 A”，不决定 A 或 B 是否执行。
 节点本身的启用条件见[条件 Step](./conditional_steps.md)。
 
-规范化形式是 `ConditionalEdge(source, target, condition)`，接线 API 则写为：
+运行时形式是 `ConditionalEdge(source, target, condition)`，接线 API 则写为：
 
 ```python
 target.wire(
@@ -20,7 +20,8 @@ target.wire(
 
 ## 两类条件
 
-StaticCondition 和 RuntimeCondition 共用边模型，但求值时机不同：
+静态条件通过绑定 evaluator 的 StaticConditions 声明；ConditionalEdge 和
+ConditionalPrerequisite 只接收 RuntimeCondition。两者求值时机不同：
 
 - 静态条件由声明编译器调用显式 evaluator 求值，保留或移除关系。
 - 运行时条件编译为带 ConditionId 的 prerequisite，交给统一 Rust session 调度。
@@ -41,7 +42,7 @@ StaticCondition(
 )
 ```
 
-宿主通过 `Graph.static_condition_eval` 提供解释，可以传入 StaticConditionEvaluator，
+宿主通过 `StaticConditions(evaluator=..., conditions=...)` 提供解释，可以传入 StaticConditionEvaluator，
 也可以传入 `Callable[[StaticCondition], bool]`。Graph 遍历声明、调用 evaluator，
 生成编译结果，不修改原声明。
 
@@ -55,7 +56,7 @@ condition = all_(
 )
 ```
 
-这里的字符串是宿主约定，不是 Graph 内置表达式。使用静态条件却没有 evaluator 会报错。
+这里的字符串是宿主约定，不是 Graph 内置表达式。StaticConditions 必须显式提供 evaluator。
 
 ### 静态边示例
 
@@ -66,24 +67,20 @@ build = Step(build_archive_input, label="build")
 write_android_env_shim = Step(write_shim, label="write_android_env_shim")
 archive = Step(create_archive, label="archive")
 
-graph = Graph.from_wiring(
-    wiring=(
-        build.wire(),
-        write_android_env_shim.wire(),
-        archive.wire(
-            after=(
-                build,
-                ConditionalPrerequisite(
-                    write_android_env_shim,
-                    condition=StaticCondition(
-                        payload=AndroidOnlyPayload(),
-                        description="target_os(android)",
-                    ),
-                ),
-            )
-        ),
+condition = StaticCondition(
+    payload=AndroidOnlyPayload(),
+    description="target_os(android)",
+)
+graph = Graph(
+    steps=(build, write_android_env_shim, archive),
+    edges=(
+        UnconditionalEdge(source=build, target=archive),
+        UnconditionalEdge(source=write_android_env_shim, target=archive),
     ),
-    static_condition_eval=evaluate_target_condition,
+    static=StaticConditions(
+        evaluator=evaluate_target_condition,
+        conditions={(write_android_env_shim, archive): condition},
+    ),
 )
 ```
 
@@ -101,8 +98,19 @@ build ────────────────────→ archive
 write_android_env_shim       （仍独立执行）
 ```
 
-静态边为真时变成普通依赖，为假时移除。要同时禁用来源 Step，应声明 Step.when。
+静态边为真时变成普通依赖，为假时移除。要同时禁用来源 Step，应声明静态节点规则。
 示例中的 payload、evaluator 和业务 action 都由宿主提供。
+
+## DSL 静态边
+
+```python
+static = StaticConditions(evaluator=evaluate_target_condition)
+graph = static.edge(checks, build, when=wait_for_checks).graph()
+```
+
+这仍是普通 GraphWiring，不增加 gate Step。与 static.when 不同，条件为假只删除边，
+checks 和 build 都仍然存在。组合多个 StaticConditions 时，每条规则保留自己的 evaluator；
+同一节点或边的重复规则报错，不覆盖。DSL 不会自动合并重复出现的 Step 对象。
 
 ## 运行时条件
 

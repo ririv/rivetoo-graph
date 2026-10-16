@@ -38,7 +38,7 @@ Defined in [model.py](../src/rivetoo_graph/model.py), `Graph` contains:
 - `edges: tuple[GraphEdge, ...]`
 - `capabilities: CapabilityInterface`
 - `observation: GraphObservationMessages`
-- `static_condition_eval: StaticConditionEval | None`
+- `static: tuple[StaticConditions, ...]`
 
 It describes an execution DAG and has no `run()` method. Capabilities hold
 read-only input/output mappings. At construction, passing an inner Graph as
@@ -60,7 +60,7 @@ A Step contains:
 ```python
 label: str | None
 action: LeafAction | Graph | NativeGraph
-when: StaticCondition | RuntimeCondition | None
+when: RuntimeCondition | None
 ```
 
 It has no public `id` or `after` field.
@@ -125,7 +125,7 @@ are explicit:
 archive.wire(
     after=(
         build,
-        ConditionalPrerequisite(android_shim, condition=android_only),
+        ConditionalPrerequisite(configure, condition=cache_miss),
     )
 )
 ```
@@ -242,8 +242,8 @@ already running graph.
 
 ## Conditions
 
-`Step.when` controls node participation; ConditionalEdge controls whether a
-prerequisite applies. StaticCondition is evaluated during compilation;
+`Step.when` and ConditionalEdge accept runtime conditions. StaticConditions binds
+node and edge rules to an evaluator for compilation. See [static rules](./conditional_steps.md).
 RuntimeCondition is evaluated during execution.
 
 ```python

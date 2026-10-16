@@ -15,7 +15,7 @@
 Step(action=..., label=..., when=...)
 ```
 
-label 只用于展示。when 接受 `StaticCondition | RuntimeCondition | None`，不接受 bool。
+label 只用于展示。when 接受 `RuntimeCondition | None`，不接受 bool。
 接线通过 `Step.wire(after=...)` 声明，最终保存在 Graph.edges，而非 Step 本身。
 
 ## 语义
@@ -23,8 +23,6 @@ label 只用于展示。when 接受 `StaticCondition | RuntimeCondition | None`�
 | when | 行为 |
 | --- | --- |
 | None | 节点启用 |
-| 静态条件为真 | 编译时保留节点 |
-| 静态条件为假 | 编译时裁剪节点 |
 | 运行时条件为真 | 按普通 prerequisite 等待并执行 |
 | 运行时条件为假 | 进入 Skipped 终态，不执行 action、不产生 action 结果 |
 
@@ -32,6 +30,42 @@ label 只用于展示。when 接受 `StaticCondition | RuntimeCondition | None`�
 两个状态，也不是“执行一个返回 False 的 action”。
 
 对子图，运行时条件为假时不进入内部图，composite 与后代一并跳过。
+
+## 静态节点和子图
+
+静态条件不放在 Step.when 中，而由 StaticConditions 绑定解释器后声明：
+
+```python
+static = StaticConditions(evaluator=evaluate_target_condition)
+graph = (prepare >> static.when(is_android, android) >> build).graph()
+child_graph = static.when(is_android, android_graph).graph()
+```
+
+条件为假时，编译器移除节点及关联边，不自动把前驱接到后继。声明图保持不变，
+可继续查看原始条件。子图必须先构造，静态规则不会延迟其 Python 构造函数。
+
+不用 DSL 时，同一个 API 通过 Graph.static 接入：
+
+```python
+graph = Graph(
+    steps=(android, checks, build),
+    edges=(
+        UnconditionalEdge(source=android, target=build),
+        UnconditionalEdge(source=checks, target=build),
+    ),
+    static=StaticConditions(
+        evaluator=evaluate_target_condition,
+        conditions={
+            android: is_android,
+            (checks, build): wait_for_checks,
+        },
+    ),
+)
+```
+
+规则必须引用图中已声明的节点或边。节点和边使用同一个映射，不需要两套 Step / Graph。
+条件只在编译时求值；同一声明可重复编译，但 evaluator 应保持纯函数语义。
+静态节点规则可以与节点自身的运行时 when 同时存在：先静态裁剪，再运行时判断。
 
 ## 与条件边的区别
 

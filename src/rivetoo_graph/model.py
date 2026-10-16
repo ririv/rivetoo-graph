@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypeGuard
 
 from ._native import NativeGraph, dag_cycle
 from .capability import CapabilitiesInput, CapabilityBinding, CapabilityInterface
 from .errors import GraphError
-from .static_condition import StaticCondition, StaticConditionEval
+from .static_conditions import (
+    BoundStaticCondition,
+    StaticConditions,
+    StaticConditionsInput,
+    StaticTarget,
+    resolve_static_bindings,
+    static_groups,
+)
 from .topology import Arc
 
 
@@ -184,13 +191,10 @@ def runtime_condition(
     return RuntimeCondition(when=when, reads=reads)
 
 
-type Condition = StaticCondition | RuntimeCondition
-
-
 @dataclass(frozen=True, slots=True)
 class ConditionalPrerequisite:
     step: Step
-    condition: Condition = field(kw_only=True)
+    condition: RuntimeCondition = field(kw_only=True)
 
 
 type StepPrerequisite = Step | ConditionalPrerequisite
@@ -289,17 +293,16 @@ class Step:
     action: StepAction
     # `when` 控制的是 step 本身是否参与这次图执行，而不是依赖边是否成立。
     # 约定：
-    # - StaticCondition: freeze 阶段直接裁掉该 step
-    # - RuntimeCondition: 运行时求值；为 False 时该 step 视为不存在
+    # - RuntimeCondition: 运行时求值；为 False 时该 step 进入 Skipped 终态
     # 这条语义对 leaf step 和 graph-action step 完全一致。
-    when: Condition | None = None
+    when: RuntimeCondition | None = None
 
     def __init__(
         self,
         action: StepActionInput,
         *,
         label: str | None = None,
-        when: Condition | None = None,
+        when: RuntimeCondition | None = None,
     ) -> None:
         if label == "":
             raise GraphError("step label must not be empty")
@@ -383,7 +386,7 @@ class UnconditionalEdge:
 class ConditionalEdge:
     source: Step
     target: Step
-    condition: Condition
+    condition: RuntimeCondition
 
 
 type GraphEdge = UnconditionalEdge | ConditionalEdge | CapabilityBinding
@@ -395,6 +398,7 @@ class GraphWiring:
 
     steps: tuple[Step, ...]
     edges: tuple[GraphEdge, ...] = ()
+    static: tuple[StaticConditions, ...] = ()
 
     def _boundary_nodes(self) -> tuple[set[Step], set[Step]]:
         known_steps = set(self.steps)
@@ -445,7 +449,7 @@ class GraphWiring:
         label: str | None = None,
         capabilities: CapabilitiesInput | None = None,
         observation: GraphObservationMessages | None = None,
-        static_condition_eval: StaticConditionEval | None = None,
+        static: StaticConditionsInput = (),
     ) -> Graph:
         """将当前接线显式物化为一张 Graph。"""
 
@@ -454,7 +458,7 @@ class GraphWiring:
             label=label,
             capabilities=capabilities,
             observation=observation,
-            static_condition_eval=static_condition_eval,
+            static=static,
         )
 
 
@@ -467,7 +471,7 @@ class Graph:
     """DAG 图结构本体。
 
     `Graph` 表达的是一张有向无环图（DAG），描述图结构本体，
-    以及这张图自己的静态条件求值入口。
+    以及这张图绑定了求值器的静态选择。
 
     它表达的是：
     - 可选的可读 label
@@ -475,7 +479,7 @@ class Graph:
     - step 之间有哪些依赖边
     - 哪些 step 挂子图
     - 图级 observation
-    - 这张图里的 `StaticCondition` 该如何求值
+    - 这张图的节点和边在哪些静态条件下参与
 
     它不表达的是：
     - 图挂载后的结构身份
@@ -490,7 +494,10 @@ class Graph:
     observation: GraphObservationMessages = field(
         default_factory=GraphObservationMessages
     )
-    static_condition_eval: StaticConditionEval | None = None
+    static: tuple[StaticConditions, ...] = ()
+    _static_bindings: Mapping[StaticTarget, BoundStaticCondition] = field(
+        init=False, repr=False, compare=False
+    )
 
     def __init__(
         self,
@@ -499,7 +506,7 @@ class Graph:
         edges: tuple[GraphEdge, ...] = (),
         capabilities: CapabilitiesInput | None = None,
         observation: GraphObservationMessages | None = None,
-        static_condition_eval: StaticConditionEval | None = None,
+        static: StaticConditionsInput = (),
     ) -> None:
         object.__setattr__(self, "label", label)
         object.__setattr__(self, "steps", steps)
@@ -516,8 +523,23 @@ class Graph:
             "observation",
             GraphObservationMessages() if observation is None else observation,
         )
-        object.__setattr__(self, "static_condition_eval", static_condition_eval)
+        object.__setattr__(self, "static", static_groups(static))
         self._validate()
+        object.__setattr__(
+            self,
+            "_static_bindings",
+            resolve_static_bindings(
+                self.static,
+                steps=self.steps,
+                edge_pairs={
+                    (edge.source, edge.target)
+                    for edge in self.edges
+                    if not isinstance(edge, CapabilityBinding)
+                }
+                if self.static
+                else set(),
+            ),
+        )
 
     @classmethod
     def from_wiring(
@@ -527,7 +549,7 @@ class Graph:
         label: str | None = None,
         capabilities: CapabilitiesInput | None = None,
         observation: GraphObservationMessages | None = None,
-        static_condition_eval: StaticConditionEval | None = None,
+        static: StaticConditionsInput = (),
     ) -> Graph:
         normalized = (
             wiring
@@ -542,7 +564,7 @@ class Graph:
             observation=(
                 GraphObservationMessages() if observation is None else observation
             ),
-            static_condition_eval=static_condition_eval,
+            static=(*normalized.static, *static_groups(static)),
         )
 
     def __rshift__(self, other: GraphWiringOperand) -> GraphWiring:
@@ -555,7 +577,7 @@ class Graph:
         self,
         *,
         label: str | None = None,
-        when: Condition | None = None,
+        when: RuntimeCondition | None = None,
     ) -> Step:
         """把当前图包装成一个可挂载 step。"""
 
@@ -619,6 +641,7 @@ def _sequence_wiring(
     return GraphWiring(
         steps=(*left_wiring.steps, *right_wiring.steps),
         edges=(*left_wiring.edges, *right_wiring.edges, *connecting_edges),
+        static=(*left_wiring.static, *right_wiring.static),
     )
 
 
@@ -631,6 +654,7 @@ def _parallel_wiring(
     return GraphWiring(
         steps=(*left_wiring.steps, *right_wiring.steps),
         edges=(*left_wiring.edges, *right_wiring.edges),
+        static=(*left_wiring.static, *right_wiring.static),
     )
 
 

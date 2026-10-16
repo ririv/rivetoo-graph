@@ -114,9 +114,11 @@ if TYPE_CHECKING:
         evaluate_static_condition,
         not_,
     )
+    from .static_conditions import StaticConditions
     from .topology import Arc, DAGTopology, DirectedTopology, TopologyCycleError
 
 _EXPORT_GROUPS = (
+    (".static_conditions", ("StaticConditions",)),
     ("._native", ("NativeGraph",)),
     (
         ".events",
@@ -289,6 +291,7 @@ __all__ = [
     "RuntimeCondition",
     "runtime_condition",
     "StaticCondition",
+    "StaticConditions",
     "StaticConditionEval",
     "StaticConditionEvalFn",
     "StaticConditionEvaluator",

@@ -6,16 +6,15 @@ from typing import TYPE_CHECKING
 from ..model import (
     Graph,
     GraphMode,
-    RuntimeCondition,
     Step,
     StepId,
     resolve_step_label,
     step_ids_for_mount,
 )
 from .formatting import (
-    condition_name,
     render_execution_result_suffix,
     render_graph_after_suffix,
+    render_static_suffix,
     render_step_label,
 )
 
@@ -184,6 +183,7 @@ def append_execution_step(
     )
     lines.append(
         f"{prefix}{branch}{base}"
+        f"{render_static_suffix(graph, step)}"
         f"{render_execution_when_suffix(step, step_id=step_id, condition_values=snapshot.runtime_condition_values)}"
         f" [{status.value}]"
         f"{render_execution_result_suffix(step_id, snapshot.results)}"
@@ -245,12 +245,10 @@ def render_execution_when_suffix(
     when = step.when
     if when is None:
         return ""
-    if isinstance(when, RuntimeCondition):
-        value = condition_values.get(step_id)
-        if value is None:
-            return " [when=pending]"
-        return f" [when={str(value).lower()}]"
-    return f" [when: {condition_name(when)}]"
+    value = condition_values.get(step_id)
+    if value is None:
+        return " [when=pending]"
+    return f" [when={str(value).lower()}]"
 
 
 def active_execution_step_ids(

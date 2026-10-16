@@ -48,7 +48,7 @@ GraphExecutionState
 - `capabilities: CapabilityInterface`：统一持有输入和输出的只读映射；声明时也可传入
   内部 Graph，显式转发它的完整接口。
 - `observation: GraphObservationMessages`
-- `static_condition_eval: StaticConditionEval | None`
+- `static: tuple[StaticConditions, ...]`
 
 `Graph` 不负责执行，也不带 `run()`。
 
@@ -68,7 +68,7 @@ Step 本身不保存 `after`。运行时条件的 `reads` 是另一类显式阻�
 
 - `label: str | None`
 - `action: LeafAction | Graph | NativeGraph`
-- `when: StaticCondition | RuntimeCondition | None`
+- `when: RuntimeCondition | None`
 
 `Step` 没有公开 `id`，也不保存 `after`。
 
@@ -152,8 +152,8 @@ archive.wire(
     after=(
         build,
         ConditionalPrerequisite(
-            android_shim,
-            condition=android_only,
+            configure,
+            condition=cache_miss,
         ),
     )
 )
@@ -240,7 +240,7 @@ selected_graph = select_one(
 )()
 ```
 
-这与 `Step.when` 的语义不同：`Step.when` 是执行图中一个节点的静态存在条件；
+这与 `Step.when` 的语义不同：`Step.when` 是执行图中一个节点的运行时启用条件；
 `select_one()` 是进入 Graph 之前的严格构图选择。
 
 ## `LeafAction`
@@ -320,12 +320,9 @@ def select_graph(run_ctx: StepRunContext) -> Graph:
 - `ConditionalEdge`
   - 控制一条 prerequisite 是否成立
 
-条件值是和类型：
-
-- `StaticCondition`
-  - 在编译阶段求值
-- `RuntimeCondition`
-  - 在 runtime 中求值
+Step.when 和 ConditionalEdge 只接受 RuntimeCondition。
+静态条件通过 `StaticConditions(evaluator=..., conditions=...)` 绑定节点或边，
+在编译阶段求值；直接构造与 DSL 写法见[条件 Step](./conditional_steps.md)。
 
 运行时条件使用 Step 对象声明读取依赖：
 

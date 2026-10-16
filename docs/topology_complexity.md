@@ -76,6 +76,13 @@ without changing the asymptotic bound.
 With B = 0, time is O(V + E), including runtime conditions that read no results.
 Runtime conditions do not inherently add another V-sized loop.
 
+StaticConditions adds S explicit node/edge rules. When present, their membership
+validation and lookup index cost O(V + E + S) time and space, independently of
+predicate evaluation. With no static groups, this index path is O(1), and the Rust
+collector skips per-node/per-edge static lookups. Each lookup with rules is O(1)
+on average; evaluator cost depends on the host expression. The declaration remains
+validated before pruning, so a false static rule cannot legalize a structural cycle.
+
 ## Capabilities and global compilation
 
 CapabilityBinding validates components and ports at declaration time, but does not

@@ -17,7 +17,7 @@ Step(action=..., label=..., when=...)
 ```
 
 Label is optional presentation. `when` accepts
-`StaticCondition | RuntimeCondition | None`, not bool.
+`RuntimeCondition | None`, not bool.
 Wiring belongs to `Step.wire(after=...)` and Graph.edges, not to Step itself.
 
 ## Semantics
@@ -28,8 +28,42 @@ Wiring belongs to `Step.wire(after=...)` and Graph.edges, not to Step itself.
 
 ### Static condition
 
-A true StaticCondition retains the Step. A false condition removes it during
-`compile_graph(...)`: that node is absent from this compilation.
+Static rules belong to StaticConditions, not Step.when:
+
+```python
+static = StaticConditions(evaluator=evaluate_target_condition)
+graph = (prepare >> static.when(is_android, android) >> build).graph()
+child_graph = static.when(is_android, android_graph).graph()
+```
+
+False removes the node and its incident edges during compilation, without connecting
+its predecessors to successors. The declaration stays unchanged and remains
+inspectable. The child Graph is constructed first; this API does not defer Python
+graph construction.
+
+Without the DSL:
+
+```python
+graph = Graph(
+    steps=(android, checks, build),
+    edges=(
+        UnconditionalEdge(source=android, target=build),
+        UnconditionalEdge(source=checks, target=build),
+    ),
+    static=StaticConditions(
+        evaluator=evaluate_target_condition,
+        conditions={
+            android: is_android,
+            (checks, build): wait_for_checks,
+        },
+    ),
+)
+```
+
+Rules reference declared nodes or edges. One mapping covers both, without a second
+Step or Graph type. Evaluation happens only during compilation; declarations can be
+compiled again. Evaluators should be pure and must not mutate shared state.
+A static node rule may coexist with runtime when: static pruning happens first.
 
 ### Runtime condition
 

@@ -8,7 +8,7 @@ A conditional edge describes an optional prerequisite: “B depends on A, but on
 if this condition holds.” It does not decide whether A or B executes.
 For node participation, use [conditional steps](./conditional_steps.md).
 
-The normalized form is `ConditionalEdge(source, target, condition)`. The wiring
+The runtime form is `ConditionalEdge(source, target, condition)`. The wiring
 API provides:
 
 ```python
@@ -24,8 +24,8 @@ inside action side effects.
 
 ## Two kinds of conditions
 
-Both StaticCondition and RuntimeCondition use the same high-level edge model.
-They differ in evaluation time and input:
+StaticConditions binds static rules to their evaluator. ConditionalEdge and
+ConditionalPrerequisite accept only RuntimeCondition. Evaluation differs:
 
 - During declaration compilation, an explicit evaluator resolves static conditions.
 - Runtime conditions lower to prerequisites identified by ConditionId.
@@ -50,8 +50,8 @@ StaticCondition(
 ```
 
 Graph does not define domain-specific environment, platform, or artifact-kind
-expressions. The host supplies their meaning through `Graph.static_condition_eval`,
-which accepts either a StaticConditionEvaluator or
+expressions. The host supplies their meaning through StaticConditions. Its
+`evaluator` accepts either a StaticConditionEvaluator or
 `Callable[[StaticCondition], bool]`.
 
 Graph traverses declarations, calls the evaluator, and retains or removes the
@@ -69,7 +69,7 @@ condition = all_(
 ```
 
 These strings are host-defined payloads, not built-in Graph expressions.
-Using static conditions without an evaluator is an error.
+StaticConditions requires an explicit evaluator.
 
 ### A static-edge example
 
@@ -81,24 +81,20 @@ build = Step(build_archive_input, label="build")
 write_android_env_shim = Step(write_shim, label="write_android_env_shim")
 archive = Step(create_archive, label="archive")
 
-graph = Graph.from_wiring(
-    wiring=(
-        build.wire(),
-        write_android_env_shim.wire(),
-        archive.wire(
-            after=(
-                build,
-                ConditionalPrerequisite(
-                    write_android_env_shim,
-                    condition=StaticCondition(
-                        payload=AndroidOnlyPayload(),
-                        description="target_os(android)",
-                    ),
-                ),
-            )
-        ),
+condition = StaticCondition(
+    payload=AndroidOnlyPayload(),
+    description="target_os(android)",
+)
+graph = Graph(
+    steps=(build, write_android_env_shim, archive),
+    edges=(
+        UnconditionalEdge(source=build, target=archive),
+        UnconditionalEdge(source=write_android_env_shim, target=archive),
     ),
-    static_condition_eval=evaluate_target_condition,
+    static=StaticConditions(
+        evaluator=evaluate_target_condition,
+        conditions={(write_android_env_shim, archive): condition},
+    ),
 )
 ```
 
@@ -117,9 +113,21 @@ write_android_env_shim       (still runs independently)
 ```
 
 A true static edge becomes an ordinary dependency; a false one disappears.
-Removing an edge does not disable its source Step. Use Step.when to disable the
+Removing an edge does not disable its source Step. Use a static node rule to disable the
 source as well. Payload types, evaluator functions, and actions in this example
 belong to the host.
+
+## Static edge DSL
+
+```python
+static = StaticConditions(evaluator=evaluate_target_condition)
+graph = static.edge(checks, build, when=wait_for_checks).graph()
+```
+
+This returns ordinary GraphWiring without gate Steps. Unlike static.when, false
+removes only the edge; checks and build remain. Composed StaticConditions retain
+their own evaluators. Duplicate rules for one target are rejected, never overridden.
+The DSL does not automatically merge repeated Step objects.
 
 ## Runtime conditions
 

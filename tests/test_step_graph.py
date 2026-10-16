@@ -7,7 +7,6 @@ from rivetoo_graph import (
     GraphError,
     GraphWiring,
     LeafAction,
-    StaticCondition,
     Step,
     StepRunContext,
     StepWiring,
@@ -282,7 +281,7 @@ def test_step_function_wraps_labeled_graph_without_expanding_it() -> None:
 
 def test_graph_step_wraps_graph_with_mount_parameters() -> None:
     child = Graph(label="child")
-    condition = StaticCondition(payload="enabled", description="enabled")
+    condition = runtime_condition(when=lambda _ctx: True)
 
     default_mount = child.step()
     configured_mount = child.step(label="build", when=condition)
