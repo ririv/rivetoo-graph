@@ -270,21 +270,19 @@ impl NativeMixedExecutionSession {
         Ok(result)
     }
 
-    /// Waits for one Rust action without holding the Python GIL.
+    /// Waits for outstanding Rust work without losing a concurrently drained notification.
     fn wait_native(&self, py: Python<'_>) -> PyResult<()> {
-        {
+        let wait = {
             let state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.native_running == 0 {
-                return Err(PyValueError::new_err(
-                    "cannot wait when no native action is running",
-                ));
+                return Ok(());
             }
-        }
-        let executor = self.executor.clone();
-        py.detach(move || executor.wait_for_completion());
+            self.executor.prepare_wait()
+        };
+        py.detach(move || wait.wait());
         Ok(())
     }
 }

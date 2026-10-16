@@ -34,9 +34,49 @@ impl NativeActionCompletion {
 }
 
 #[derive(Default)]
+struct CompletionState {
+    values: VecDeque<NativeActionCompletion>,
+    revision: u64,
+}
+
+#[derive(Default)]
 struct CompletionQueue {
-    values: Mutex<VecDeque<NativeActionCompletion>>,
+    state: Mutex<CompletionState>,
     ready: Condvar,
+}
+
+enum WaitState {
+    Ready,
+    Pending(u64),
+}
+
+/// A wait bound to the completion queue and revision observed at preparation.
+pub struct NativeCompletionWait {
+    queue: Arc<CompletionQueue>,
+    state: WaitState,
+}
+
+impl NativeCompletionWait {
+    pub fn wait(self) {
+        match self.state {
+            WaitState::Ready => (),
+            WaitState::Pending(revision) => {
+                let mut state = self
+                    .queue
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // 即使另一个 driver 已取走完成记录，序号变化也保留这次通知。
+                while state.values.is_empty() && state.revision == revision {
+                    state = self
+                        .queue
+                        .ready
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+        }
+    }
 }
 
 struct ExecutorInner {
@@ -120,19 +160,24 @@ impl NativeActionExecutor {
 
     /// Blocks until at least one completion can be drained.
     pub fn wait_for_completion(&self) {
-        let mut values = self
+        self.prepare_wait().wait();
+    }
+
+    #[must_use]
+    pub fn prepare_wait(&self) -> NativeCompletionWait {
+        let state = self
             .inner
             .completions
-            .values
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while values.is_empty() {
-            values = self
-                .inner
-                .completions
-                .ready
-                .wait(values)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        NativeCompletionWait {
+            queue: Arc::clone(&self.inner.completions),
+            state: if state.values.is_empty() {
+                WaitState::Pending(state.revision)
+            } else {
+                WaitState::Ready
+            },
         }
     }
 
@@ -140,9 +185,10 @@ impl NativeActionExecutor {
     pub fn drain_completions(&self) -> Vec<NativeActionCompletion> {
         self.inner
             .completions
-            .values
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values
             .drain(..)
             .collect()
     }
@@ -162,14 +208,61 @@ fn worker_loop(
         };
         let result = catch_unwind(AssertUnwindSafe(|| job.action.execute(&job.context)))
             .unwrap_or_else(|_| Err(NativeActionError::new("native action panicked")));
-        completions
-            .values
+        let mut state = completions
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_back(NativeActionCompletion {
-                node: job.node,
-                result,
-            });
-        completions.ready.notify_one();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.values.push_back(NativeActionCompletion {
+            node: job.node,
+            result,
+        });
+        state.revision = state
+            .revision
+            .checked_add(1)
+            .expect("native completion revision overflow");
+        drop(state);
+        completions.ready.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NativeAction;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Noop;
+
+    impl NativeAction for Noop {
+        fn execute(&self, _context: &NativeActionContext) -> Result<(), NativeActionError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn prepared_wait_survives_completion_drain() {
+        let executor = NativeActionExecutor::new(1).unwrap();
+        let pending = executor.prepare_wait();
+        executor
+            .submit(
+                0,
+                NativeActionHandle::new(Noop),
+                NativeActionContext::default(),
+            )
+            .unwrap();
+        executor.wait_for_completion();
+        let ready = executor.prepare_wait();
+        assert_eq!(executor.drain_completions().len(), 1);
+        let (sent, received) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            pending.wait();
+            ready.wait();
+            sent.send(()).unwrap();
+        });
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("completion notification was lost after drain");
+        waiter.join().unwrap();
     }
 }

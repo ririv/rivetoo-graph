@@ -84,4 +84,4 @@ impl Display for NativeActionError {
 }
 
 impl Error for NativeActionError {}
-pub use executor::{NativeActionCompletion, NativeActionExecutor};
+pub use executor::{NativeActionCompletion, NativeActionExecutor, NativeCompletionWait};
