@@ -118,8 +118,9 @@ class LeafAction:
     单参数调用，则固定使用 `fn()`；这样不会把运行上下文错误传给
     `lambda value=value: ...` 这类通过默认参数捕获业务值的闭包。
 
-    runtime 不会把其它业务参数传给 action。需要业务值时由闭包捕获；
-    同时需要运行上下文时，则把唯一的 runtime 实参位置留给 `ctx`。
+    runtime 不会把其它业务参数作为独立实参传给 action。业务值可由闭包捕获，
+    或显式注入执行入口后通过 `ctx.shared(ExpectedType)` 读取；
+    需要运行上下文时，把唯一的 runtime 实参位置留给 `ctx`。
     """
 
     _call: _LeafActionCall

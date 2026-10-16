@@ -343,6 +343,53 @@ A leaf action uses its own binding. Without one, it inherits the nearest bound
 ancestor's path. Static and runtime-returned subgraphs also inherit the path;
 actions cannot change the bindings at runtime.
 
+## Execution shared state
+
+Pass an explicitly constructed business object with `GraphExecution(shared=...)`.
+Python actions access that same object through `ctx.shared(ExpectedType)`, which
+returns the requested type and rejects a missing object or a type mismatch. It
+does not create a default dictionary or resolve objects from a registry.
+
+```python
+from dataclasses import dataclass, field
+from threading import Lock
+
+from rivetoo_graph import GraphExecution, Step, StepRunContext, ThreadGraphRunOptions
+
+
+@dataclass
+class Progress:
+    completed: int = 0
+    lock: Lock = field(default_factory=Lock)
+
+    def advance(self) -> None:
+        with self.lock:
+            self.completed += 1
+
+
+def task(ctx: StepRunContext) -> None:
+    progress = ctx.shared(Progress)
+    progress.advance()
+
+
+graph = (Step(task) >> Step(task)).graph()
+progress = Progress()
+GraphExecution(graph=graph, shared=progress).run(ThreadGraphRunOptions(workers=2))
+assert progress.completed == 2
+```
+
+Shared state belongs to the execution input, not the Graph declaration, scheduler
+state, result store, or execution snapshot. Static and runtime-returned subgraphs
+receive the same reference, at O(1) cost per action without copying the object.
+The serial, threaded, and async executors also accept `shared=` directly.
+
+The caller owns synchronization, resource cleanup, and lifetime. Compose several
+shared capabilities into a typed object if needed. Supply a fresh object to
+isolate runs; explicitly reusing one instance shares it across runs. Sharing does
+not add scheduling edges: declare a dependency when a read must wait for a write.
+Runtime predicates retain their read-only result context and do not receive shared
+state. Python shared objects are not projected into Rust native actions.
+
 ## Observation and state
 
 GraphObservationMessages contains presentation-only `before` and

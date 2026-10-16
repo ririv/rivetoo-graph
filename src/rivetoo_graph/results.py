@@ -181,6 +181,20 @@ class StepRunContext:
     view: StepReadContext
     control: StepControl
     step_log_path: Path | None
+    _shared: object | None = field(default=None, repr=False, kw_only=True)
+
+    def shared[T](self, expected: type[T]) -> T:
+        """Return the explicitly injected shared object with a checked type."""
+
+        if self._shared is None:
+            raise RuntimeError("no shared state was provided for this graph run")
+        if not isinstance(self._shared, expected):
+            raise TypeError(
+                "graph shared state type mismatch: "
+                f"expected {expected.__qualname__}, "
+                f"got {type(self._shared).__qualname__}"
+            )
+        return self._shared
 
     def result(self, ref: StepResultRef) -> StepResult | None:
         return self.view.result(ref)

@@ -40,6 +40,7 @@ class GraphExecution:
     - 原始图结构
     - 这次执行共享的 `GraphExecutionState`
     - 这次执行使用的 `GraphExecutionControl`
+    - 调用方显式提供、由各 Python action 共享的业务对象
 
     它负责的入口包括：
     - `compile()`：在内部 lower 条件边并生成 `GraphCompilation`
@@ -47,6 +48,7 @@ class GraphExecution:
     """
 
     graph: Graph
+    shared: object | None = field(default=None, kw_only=True, repr=False)
     execution_state: GraphExecutionState = field(default_factory=GraphExecutionState)
     execution_control: GraphExecutionControl = field(
         default_factory=GraphExecutionControl,
@@ -172,6 +174,7 @@ class GraphExecution:
             if isinstance(run_options, AsyncGraphRunOptions):
                 result = AsyncGraphExecutor(
                     self.execution_state,
+                    shared=self.shared,
                     execution_control=self.execution_control,
                     observer=run_options.observer,
                     action_log=self.action_log,
@@ -183,6 +186,7 @@ class GraphExecution:
             elif isinstance(run_options, ThreadGraphRunOptions):
                 result = ParallelGraphExecutor(
                     self.execution_state,
+                    shared=self.shared,
                     execution_control=self.execution_control,
                     observer=run_options.observer,
                     action_log=self.action_log,

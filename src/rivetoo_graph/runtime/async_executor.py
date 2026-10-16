@@ -73,12 +73,14 @@ class AsyncGraphExecutor:
         self,
         state: GraphExecutionState | None = None,
         *,
+        shared: object | None = None,
         execution_control: GraphExecutionControl,
         observer: GraphObserver | None = None,
         action_log: GraphActionLog = NO_GRAPH_ACTION_LOG,
         record_composites_as_steps: bool = False,
     ) -> None:
         self.state = state or GraphExecutionState()
+        self._shared = shared
         self.execution_control = execution_control
         self.observer = observer
         self.action_log = action_log
@@ -180,6 +182,7 @@ class AsyncGraphExecutor:
         run_ctx = run.make_run_context(
             self.state,
             runtime_step,
+            shared=self._shared,
         )
         value = await _invoke_async_step_action(
             action,

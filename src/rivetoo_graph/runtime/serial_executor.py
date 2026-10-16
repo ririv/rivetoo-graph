@@ -52,11 +52,13 @@ class SerialGraphExecutor:
         self,
         state: GraphExecutionState | None = None,
         *,
+        shared: object | None = None,
         observer: GraphObserver | None = None,
         action_log: GraphActionLog = NO_GRAPH_ACTION_LOG,
         record_composites_as_steps: bool = False,
     ) -> None:
         self.state = state or GraphExecutionState()
+        self._shared = shared
         self.observer = observer
         self.action_log = action_log
         self.record_composites_as_steps = record_composites_as_steps
@@ -126,7 +128,7 @@ class SerialGraphExecutor:
             graph_step_ids=step.context.graph_step_ids,
             ancestor_graph_scopes=step.context.ancestor_graph_scopes,
         )
-        run_ctx = run.make_run_context(self.state, runtime_step)
+        run_ctx = run.make_run_context(self.state, runtime_step, shared=self._shared)
         value = _invoke_serial_python_action(
             action,
             run_ctx,

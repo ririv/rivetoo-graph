@@ -474,6 +474,49 @@ O(V + K)；没有绑定时不遍历图。
 叶子动作直接使用自己的绑定；未声明时沿用最近的已绑定祖先路径。静态子图和 action
 动态返回的子图也沿用所属步骤的路径；action 不提供运行时修改绑定的入口。
 
+## 执行级共享状态
+
+`GraphExecution(shared=...)` 接收调用方显式构造的业务对象，各 Python action 通过
+`ctx.shared(ExpectedType)` 取得同一个对象。此入口返回确定的类型，并在类型不符或未
+提供共享对象时明确报错；不创建默认字典，也不按类型查找或创建其他实例。
+
+```python
+from dataclasses import dataclass, field
+from threading import Lock
+
+from rivetoo_graph import GraphExecution, Step, StepRunContext, ThreadGraphRunOptions
+
+
+@dataclass
+class Progress:
+    completed: int = 0
+    lock: Lock = field(default_factory=Lock)
+
+    def advance(self) -> None:
+        with self.lock:
+            self.completed += 1
+
+
+def task(ctx: StepRunContext) -> None:
+    progress = ctx.shared(Progress)
+    progress.advance()
+
+
+graph = (Step(task) >> Step(task)).graph()
+progress = Progress()
+GraphExecution(graph=graph, shared=progress).run(ThreadGraphRunOptions(workers=2))
+assert progress.completed == 2
+```
+
+共享对象绑定到执行入口，不进入 `Graph` 声明、`GraphExecutionState`、结果 store 或
+执行快照。静态子图和 action 动态返回的子图沿用同一引用；每个 action 只增加 O(1)
+引用传递，不复制对象。直接使用串行、线程或异步执行器时，同样可以传 `shared=`。
+
+对象的锁、资源释放和使用寿命由调用方负责；多种共享能力可以组合进一个有类型的
+对象。多次执行若需要隔离，应分别构造共享对象；显式复用同一实例就表示共享。
+共享状态不产生调度依赖，读取若必须等待写入完成，仍须声明边。动态条件只接收只读
+结果上下文，不会因此获得共享状态。此接口不把 Python 对象投影给 Rust 原生 action。
+
 ## Observation 与执行状态
 
 `GraphObservationMessages` 只保存只读展示消息：
