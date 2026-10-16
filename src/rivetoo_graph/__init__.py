@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     )
     from .results import (
         GraphResultStore,
+        GraphResultView,
         GraphScope,
         ParentGraphStepRef,
         StepControl,
@@ -193,6 +194,7 @@ _EXPORT_GROUPS = (
         ".results",
         (
             "GraphResultStore",
+            "GraphResultView",
             "GraphScope",
             "ParentGraphStepRef",
             "StepReadContext",
@@ -325,6 +327,7 @@ __all__ = [
     "MultipleStaticBranchesSelectedError",
     "select_one",
     "GraphResultStore",
+    "GraphResultView",
     "GraphScope",
     "ParentGraphStepRef",
     "StepReadContext",

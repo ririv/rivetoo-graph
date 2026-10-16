@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..model import StepId, StepLabelPath
-    from ..results import GraphResultStore
+    from ..results import GraphResultStore, GraphResultView
 
 
 def _is_same_or_descendant(step_id: StepId, ancestor: StepId) -> bool:
@@ -42,7 +42,7 @@ class GraphExecutionState:
     _entered_composites: set[StepId]
     _completed_composites: set[StepId]
     _step_label_paths: dict[StepId, StepLabelPath]
-    results: GraphResultStore | None
+    _results: GraphResultStore | None
     _step_log_paths: Mapping[StepId, Path]
     _runtime_condition_values: dict[StepId, bool]
     _node_failures: dict[StepId, GraphNodeFailure]
@@ -63,12 +63,16 @@ class GraphExecutionState:
         self._entered_composites = set()
         self._completed_composites = set()
         self._step_label_paths = {}
-        self.results = results
+        self._results = results
         self._step_log_paths = MappingProxyType({})
         self._runtime_condition_values = {}
         self._node_failures = {}
         self._lock = threading.Lock()
         self._started = False
+
+    @property
+    def results(self) -> GraphResultView | None:
+        return None if self._results is None else self._results.view
 
     @property
     def skipped_steps(self) -> frozenset[StepId]:
@@ -119,7 +123,7 @@ class GraphExecutionState:
                 entered_composites=frozenset(self._entered_composites),
                 completed_composites=frozenset(self._completed_composites),
                 step_label_paths=dict(self._step_label_paths),
-                results=None if self.results is None else self.results.copy(),
+                results=None if self._results is None else self._results.copy().view,
                 runtime_condition_values=dict(self._runtime_condition_values),
                 node_failures=dict(self._node_failures),
             )
@@ -266,8 +270,8 @@ class GraphExecutionState:
                 raise RuntimeError(
                     f"cannot record a result before step start: {step_id}"
                 )
-            if self.results is not None:
-                self.results.record(step_id, value)
+            if self._results is not None:
+                self._results.record(step_id, value)
 
     def record_runtime_condition(self, step_id: StepId, value: bool) -> None:
         """保存 runtime 已使用的 step 条件值，供 render 只读展示。"""
@@ -307,6 +311,6 @@ class GraphExecutionSnapshot:
     entered_composites: frozenset[StepId]
     completed_composites: frozenset[StepId]
     step_label_paths: dict[StepId, StepLabelPath]
-    results: GraphResultStore | None
+    results: GraphResultView | None
     runtime_condition_values: dict[StepId, bool]
     node_failures: dict[StepId, GraphNodeFailure]

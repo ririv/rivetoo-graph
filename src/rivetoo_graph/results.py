@@ -43,7 +43,7 @@ class StepReadContext:
     label_path: StepLabelPath
     graph_step_ids: Mapping[Step, StepId]
     ancestor_graph_scopes: tuple[GraphScope, ...] = ()
-    results: GraphResultStore | None = None
+    results: GraphResultView | None = None
 
     @property
     def graph_label_path(self) -> StepLabelPath:
@@ -74,7 +74,7 @@ class StepReadContext:
             )
         return step_id
 
-    def _require_results(self) -> GraphResultStore:
+    def _require_results(self) -> GraphResultView:
         if self.results is None:
             raise RuntimeError("step results are not enabled for this graph run")
         return self.results
@@ -109,6 +109,22 @@ class StepControl:
         self._state.request_skips(step_ids)
 
 
+@dataclass(frozen=True, slots=True)
+class GraphResultView:
+    """Read-only access to step result records, without copying their values."""
+
+    _store: GraphResultStore = field(repr=False)
+
+    def get(self, step_id: StepId) -> StepResult | None:
+        return self._store.get(step_id)
+
+    def require(self, step_id: StepId) -> StepResult:
+        return self._store.require(step_id)
+
+    def has(self, step_id: StepId) -> bool:
+        return self._store.has(step_id)
+
+
 @dataclass(slots=True)
 class GraphResultStore:
     """以本次图挂载分配的 `StepId` 保存执行结果的线程安全存储。
@@ -123,9 +139,20 @@ class GraphResultStore:
         init=False,
         repr=False,
     )
+    _view: GraphResultView = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # 每个 store 只创建一个 O(1) 视图；各步骤和观察者共享，不复制结果表。
+        self._view = GraphResultView(self)
+
+    @property
+    def view(self) -> GraphResultView:
+        return self._view
 
     def record(self, step_id: StepId, value: object | None) -> None:
         with self._lock:
+            if step_id in self._results:
+                raise RuntimeError(f"step result already recorded for id: {step_id}")
             self._results[step_id] = StepResult(value=value)
 
     def get(self, step_id: StepId) -> StepResult | None:
@@ -187,5 +214,5 @@ class StepRunContext:
         return self.view.graph_step_ids
 
     @property
-    def results(self) -> GraphResultStore | None:
+    def results(self) -> GraphResultView | None:
         return self.view.results

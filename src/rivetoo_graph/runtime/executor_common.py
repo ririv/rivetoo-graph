@@ -12,7 +12,7 @@ from ..observe import GraphObservationEvent, GraphObservationPhase, GraphObserve
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from ..results import GraphResultStore
+    from ..results import GraphResultView
     from .run import CompiledGraphRun
     from .state import GraphExecutionState
 
@@ -56,7 +56,7 @@ def step_thread_name(label_path: StepLabelPath) -> str:
 
 def make_graph_observation_results(
     state: GraphExecutionState,
-) -> GraphResultStore | None:
+) -> GraphResultView | None:
     if state.results is None:
         return None
     return state.results

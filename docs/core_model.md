@@ -305,6 +305,16 @@ def compile_action(run_ctx: StepRunContext) -> None:
     compile_source(source)
 ```
 
+`GraphResultStore` is the write side of one execution's result records. Each StepId
+can be recorded only once. Execution state, action contexts, and observation events
+expose a concrete `GraphResultView` with `get/require/has`, without `record`. They
+share one live view rather than copying the table for each Step. A state snapshot
+copies the records and exposes a read-only view of that copy.
+
+Read-only access applies to the table, not to the returned objects: values are not
+deep-copied or frozen. Treat published results as immutable; use separate shared
+state for data that actions intentionally modify together.
+
 Use a Step for a sibling and an explicit ancestor reference for an outer graph:
 
 ```python

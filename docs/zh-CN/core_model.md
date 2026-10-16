@@ -423,6 +423,14 @@ def compile_action(run_ctx: StepRunContext) -> None:
     compile_source(source)
 ```
 
+`GraphResultStore` 是本次执行的结果写入端；同一 StepId 只能记录一次，不允许覆盖。
+执行状态的 `results`、action 上下文和 observation event 均只暴露 `GraphResultView`，
+提供 `get/require/has`，没有 `record`。这些入口共享同一个实时视图，不会为每个 Step
+复制结果表。`GraphExecutionState.snapshot()` 则复制当时的记录，并以只读视图公开。
+
+只读限制针对结果表，不是对返回对象的深度冻结：返回值仍是原对象，不应在发布结果后
+继续修改其中的可变内容。需要共同修改的数据使用独立的共享状态，不改写步骤结果。
+
 同级引用直接传 Step。跨到祖先图时使用：
 
 ```python

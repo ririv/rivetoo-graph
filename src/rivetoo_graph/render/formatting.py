@@ -32,7 +32,7 @@ from ..static_condition import StaticCondition
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ..results import GraphResultStore
+    from ..results import GraphResultView
 
 
 def ensure_compilation(
@@ -216,7 +216,7 @@ def sanitize_mermaid_token(value: str) -> str:
 
 def render_execution_result_suffix(
     step_id: StepId,
-    results: GraphResultStore | None,
+    results: GraphResultView | None,
 ) -> str:
     if results is None:
         return ""
