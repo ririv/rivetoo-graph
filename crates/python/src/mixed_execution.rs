@@ -48,12 +48,19 @@ struct MixedExecutionState {
     native_running: usize,
 }
 
+enum NativeDispatch {
+    PythonOnly,
+    Mixed {
+        executor: NativeActionExecutor,
+        bindings: Vec<Option<NativeActionBinding>>,
+    },
+}
+
 /// Rust-owned session that dispatches Rust actions without a Python callback.
 #[pyclass(frozen, module = "rivetoo_graph._native")]
 pub(crate) struct NativeMixedExecutionSession {
     state: Mutex<MixedExecutionState>,
-    executor: NativeActionExecutor,
-    native_actions: Vec<Option<NativeActionBinding>>,
+    actions: NativeDispatch,
 }
 
 #[pyclass(frozen, module = "rivetoo_graph._native")]
@@ -93,17 +100,32 @@ impl NativeMixedExecutionBatch {
 impl NativeMixedExecutionSession {
     pub(crate) fn new(
         session: ExecutionSession,
-        executor: NativeActionExecutor,
-        native_actions: Vec<Option<NativeActionBinding>>,
-    ) -> Self {
-        Self {
+        bindings: Vec<Option<NativeActionBinding>>,
+        workers: usize,
+    ) -> PyResult<Self> {
+        if workers == 0 {
+            return Err(PyValueError::new_err(
+                "native action workers must be greater than zero",
+            ));
+        }
+        let native_count = bindings.iter().filter(|binding| binding.is_some()).count();
+        // 纯 Python session 不启动 Rust worker，避免按动态子图层数复制空线程池。
+        let actions = if native_count == 0 {
+            NativeDispatch::PythonOnly
+        } else {
+            NativeDispatch::Mixed {
+                executor: NativeActionExecutor::new(workers.min(native_count))
+                    .map_err(|error| PyValueError::new_err(error.to_string()))?,
+                bindings,
+            }
+        };
+        Ok(Self {
             state: Mutex::new(MixedExecutionState {
                 session,
                 native_running: 0,
             }),
-            executor,
-            native_actions,
-        }
+            actions,
+        })
     }
 
     pub(crate) fn bindings(
@@ -153,9 +175,15 @@ impl NativeMixedExecutionSession {
             .map(super::encode_event)
             .collect::<Vec<_>>();
         for node in batch.actions() {
-            match &self.native_actions[node.index()] {
-                Some(binding) => {
-                    self.executor
+            let binding = match &self.actions {
+                NativeDispatch::PythonOnly => None,
+                NativeDispatch::Mixed { executor, bindings } => bindings[node.index()]
+                    .as_ref()
+                    .map(|binding| (executor, binding)),
+            };
+            match binding {
+                Some((executor, binding)) => {
+                    executor
                         .submit(
                             node.index(),
                             binding.action.clone(),
@@ -186,7 +214,11 @@ impl NativeMixedExecutionSession {
         &self,
         state: &mut MixedExecutionState,
     ) -> (Vec<ActionOutcome>, Vec<EncodedEvent>, Vec<NativeFailure>) {
-        let completions = self.executor.drain_completions();
+        let executor = match &self.actions {
+            NativeDispatch::PythonOnly => return (Vec::new(), Vec::new(), Vec::new()),
+            NativeDispatch::Mixed { executor, .. } => executor,
+        };
+        let completions = executor.drain_completions();
         let mut completed = Vec::with_capacity(completions.len());
         let mut events = Vec::with_capacity(completions.len());
         let mut failures = Vec::new();
@@ -280,7 +312,14 @@ impl NativeMixedExecutionSession {
             if state.native_running == 0 {
                 return Ok(());
             }
-            self.executor.prepare_wait()
+            match &self.actions {
+                NativeDispatch::PythonOnly => {
+                    return Err(PyRuntimeError::new_err(
+                        "Python-only session contains native work",
+                    ));
+                }
+                NativeDispatch::Mixed { executor, .. } => executor.prepare_wait(),
+            }
         };
         py.detach(move || wait.wait());
         Ok(())

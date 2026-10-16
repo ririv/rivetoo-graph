@@ -45,9 +45,12 @@ class GraphExecutionControl:
 
     def register_stop_handler(self, handler: StopHandler) -> None:
         with self._handler_lock:
+            stopped = self._stop_event.is_set()
             if handler in self._stop_handlers:
                 return
             self._stop_handlers.append(handler)
+        if stopped:
+            handler()
 
     def request_stop(self) -> None:
         with self._handler_lock:
@@ -55,5 +58,11 @@ class GraphExecutionControl:
                 return
             self._stop_event.set()
             handlers = tuple(self._stop_handlers)
+        failures: list[Exception] = []
         for handler in handlers:
-            handler()
+            try:
+                handler()
+            except Exception as error:
+                failures.append(error)
+        if failures:
+            raise ExceptionGroup("graph stop handlers failed", failures)

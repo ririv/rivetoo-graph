@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from ..model import Graph, GraphObservationMessages, Step, StepId, StepLabelPath
     from ..observe import GraphObserver
+    from .control import GraphExecutionControl
     from .state import GraphExecutionState
 
 
@@ -91,6 +92,7 @@ class CompiledGraphRun:
         runtime_step: RuntimeStep,
         *,
         shared: object | None = None,
+        execution_control: GraphExecutionControl,
     ) -> StepRunContext:
         step = runtime_step.step
         context = step.context
@@ -106,6 +108,7 @@ class CompiledGraphRun:
             control=StepControl(
                 step_id=step.id,
                 _state=state,
+                _execution_control=execution_control,
             ),
             step_log_path=step_log_path,
             _shared=shared,

@@ -28,6 +28,12 @@ if TYPE_CHECKING:
         compile_graph,
     )
     from .errors import GraphError
+    from .events import (
+        GraphEventDeliveryError,
+        StepEventSink,
+        StepExecutionEvent,
+        StepExecutionPhase,
+    )
     from .execution import GraphExecution
     from .execution_output import (
         NO_GRAPH_EXECUTION_OUTPUT,
@@ -112,6 +118,15 @@ if TYPE_CHECKING:
 
 _EXPORT_GROUPS = (
     ("._native", ("NativeGraph",)),
+    (
+        ".events",
+        (
+            "GraphEventDeliveryError",
+            "StepEventSink",
+            "StepExecutionEvent",
+            "StepExecutionPhase",
+        ),
+    ),
     (
         ".capability",
         (
@@ -249,6 +264,10 @@ _EXPORT_GROUPS = (
 )
 
 __all__ = [
+    "GraphEventDeliveryError",
+    "StepEventSink",
+    "StepExecutionEvent",
+    "StepExecutionPhase",
     "CapabilitiesInput",
     "CapabilityInterface",
     "Capability",

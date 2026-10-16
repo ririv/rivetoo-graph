@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING
+
+from ..events import GraphEventDeliveryError, StepExecutionEvent, StepExecutionPhase
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from pathlib import Path
 
+    from ..events import StepEventSink
     from ..model import StepId, StepLabelPath
     from ..results import GraphResultStore, GraphResultView
 
@@ -23,6 +26,13 @@ class GraphNodeFailure(StrEnum):
 
     FAILED = "failed"
     BLOCKED = "blocked"
+
+
+@dataclass(slots=True)
+class _StepEvents:
+    sink: StepEventSink
+    paths: dict[StepId, StepLabelPath] = field(default_factory=dict)
+    lock: threading.RLock = field(default_factory=threading.RLock)
 
 
 @dataclass(slots=True, init=False)
@@ -48,6 +58,8 @@ class GraphExecutionState:
     _node_failures: dict[StepId, GraphNodeFailure]
     _lock: threading.Lock
     _started: bool
+    _skip_revision: int
+    _events: _StepEvents | None
 
     def __init__(
         self,
@@ -69,10 +81,36 @@ class GraphExecutionState:
         self._node_failures = {}
         self._lock = threading.Lock()
         self._started = False
+        self._skip_revision = 0
+        self._events = None
+
+    def _register_event_paths(
+        self, paths: Iterable[tuple[StepId, StepLabelPath]]
+    ) -> None:
+        if self._events is not None:
+            with self._lock:
+                self._events.paths.update(paths)
+
+    def _emit(self, step_id: StepId, phase: StepExecutionPhase) -> None:
+        if self._events is None:
+            return
+        # 未订阅时只执行上面的 O(1) 分支，不构造事件或读取标签映射。
+        with self._events.lock:
+            with self._lock:
+                path = self._events.paths[step_id]
+            try:
+                self._events.sink.emit(StepExecutionEvent(step_id, path, phase))
+            except Exception as error:
+                raise GraphEventDeliveryError("step event delivery failed") from error
 
     @property
     def results(self) -> GraphResultView | None:
         return None if self._results is None else self._results.view
+
+    @property
+    def skip_revision(self) -> int:
+        with self._lock:
+            return self._skip_revision
 
     @property
     def skipped_steps(self) -> frozenset[StepId]:
@@ -139,7 +177,9 @@ class GraphExecutionState:
             )
             if any(_is_same_or_descendant(item, step_id) for item in started):
                 raise RuntimeError(f"cannot skip an already started step: {step_id}")
-            self._skip_requests.add(step_id)
+            if step_id not in self._skip_requests:
+                self._skip_requests.add(step_id)
+                self._skip_revision += 1
 
     def request_skips(self, step_ids: Iterable[StepId]) -> None:
         for step_id in step_ids:
@@ -184,6 +224,8 @@ class GraphExecutionState:
             if step_id in self._step_label_paths or step_id in self._completed_steps:
                 raise RuntimeError(f"cannot skip an already executed step: {step_id}")
             self._skipped_steps.add(step_id)
+        if self._events is not None:
+            self._emit(step_id, StepExecutionPhase.SKIPPED)
 
     def record_step(self, step_id: StepId, label_path: StepLabelPath) -> None:
         """记录 step 已开始执行及其实际挂载路径。"""
@@ -201,6 +243,8 @@ class GraphExecutionState:
                 raise RuntimeError(f"step was executed more than once: {step_id}")
             self._step_label_paths[step_id] = label_path
             self._executed_steps.append(step_id)
+        if self._events is not None:
+            self._emit(step_id, StepExecutionPhase.STARTED)
 
     def complete_step(self, step_id: StepId) -> None:
         """记录 step 的 action 或完整子图已经成功完成。"""
@@ -214,6 +258,8 @@ class GraphExecutionState:
             if step_id in self._completed_steps:
                 raise RuntimeError(f"step was completed more than once: {step_id}")
             self._completed_steps.add(step_id)
+        if self._events is not None:
+            self._emit(step_id, StepExecutionPhase.COMPLETED)
 
     def enter_composite(self, step_id: StepId) -> None:
         """记录非执行组合边界已经激活。"""
@@ -225,6 +271,9 @@ class GraphExecutionState:
             if step_id in self._entered_composites:
                 raise RuntimeError(f"composite was entered more than once: {step_id}")
             self._entered_composites.add(step_id)
+            emit = self._events is not None and step_id not in self._step_label_paths
+        if emit:
+            self._emit(step_id, StepExecutionPhase.STARTED)
 
     def complete_composite(self, step_id: StepId) -> None:
         """记录组合边界成功完成；失败子图不会进入此状态。"""
@@ -238,6 +287,9 @@ class GraphExecutionState:
             if step_id in self._completed_composites:
                 raise RuntimeError(f"composite was completed more than once: {step_id}")
             self._completed_composites.add(step_id)
+            emit = self._events is not None and step_id not in self._completed_steps
+        if emit:
+            self._emit(step_id, StepExecutionPhase.COMPLETED)
 
     def _require_not_failed(self, step_id: StepId) -> None:
         if step_id in self._node_failures:
@@ -245,9 +297,13 @@ class GraphExecutionState:
 
     def record_failed_step(self, step_id: StepId) -> None:
         self._record_node_failure(step_id, GraphNodeFailure.FAILED)
+        if self._events is not None:
+            self._emit(step_id, StepExecutionPhase.FAILED)
 
     def record_blocked_step(self, step_id: StepId) -> None:
         self._record_node_failure(step_id, GraphNodeFailure.BLOCKED)
+        if self._events is not None:
+            self._emit(step_id, StepExecutionPhase.BLOCKED)
 
     def _record_node_failure(self, step_id: StepId, failure: GraphNodeFailure) -> None:
         with self._lock:
@@ -284,17 +340,24 @@ class GraphExecutionState:
                 )
             self._runtime_condition_values[step_id] = value
 
-    def _initialize_step_log_paths(self, paths: Mapping[StepId, Path]) -> None:
-        """构造执行对象时一次性保存日志绑定；执行期间不允许修改。"""
+    def _initialize_execution_inputs(
+        self, paths: Mapping[StepId, Path], events: StepEventSink | None
+    ) -> None:
+        """Atomically bind execution inputs after all declarations are validated."""
 
         with self._lock:
             if self._started:
                 raise RuntimeError(
-                    "cannot configure step logs after execution has started"
+                    "cannot configure inputs after execution has started"
                 )
-            if self._step_log_paths:
+            if paths and self._step_log_paths:
                 raise RuntimeError("step log paths are already configured")
-            self._step_log_paths = MappingProxyType(dict(paths))
+            if events is not None and self._events is not None:
+                raise RuntimeError("step event sink is already bound")
+            if paths:
+                self._step_log_paths = MappingProxyType(dict(paths))
+            if events is not None:
+                self._events = _StepEvents(events)
 
     def get_step_log_path(self, step_id: StepId) -> Path | None:
         with self._lock:

@@ -12,7 +12,9 @@ from ..observe import GraphObservationEvent, GraphObservationPhase, GraphObserve
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from ..results import GraphResultView
+    from ..model import LeafAction
+    from ..results import GraphResultView, StepRunContext
+    from .action_log import GraphActionLog
     from .run import CompiledGraphRun
     from .state import GraphExecutionState
 
@@ -32,6 +34,15 @@ def resolve_action_result(result: object) -> object:
 async def _await_result(result: Awaitable[object]) -> object:
     # Python 3.13 的 asyncio.run 接受 coroutine；包装后也能支持自定义 awaitable。
     return await result
+
+
+def invoke_sync_action(
+    action: LeafAction, ctx: StepRunContext, action_log: GraphActionLog
+) -> object:
+    if ctx.step_log_path is None:
+        return resolve_action_result(action.invoke(ctx))
+    with action_log.scope(ctx.step_log_path):
+        return resolve_action_result(action.invoke(ctx))
 
 
 def as_graph_result(

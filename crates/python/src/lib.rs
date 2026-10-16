@@ -5,7 +5,6 @@ mod experiment;
 mod mixed_execution;
 mod native_graph;
 
-use action::NativeActionExecutor;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rivetoo_graph::{
@@ -371,8 +370,6 @@ impl NativeCompiledExecutionGraph {
         native_contexts: Vec<(usize, Option<String>)>,
         workers: usize,
     ) -> PyResult<mixed_execution::NativeMixedExecutionSession> {
-        let executor = NativeActionExecutor::new(workers)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let bindings = mixed_execution::NativeMixedExecutionSession::bindings(
             self.graph.nodes().len(),
             native_actions,
@@ -383,9 +380,7 @@ impl NativeCompiledExecutionGraph {
             initially_skipped.into_iter().map(NodeId::new),
         )
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        Ok(mixed_execution::NativeMixedExecutionSession::new(
-            session, executor, bindings,
-        ))
+        mixed_execution::NativeMixedExecutionSession::new(session, bindings, workers)
     }
 }
 

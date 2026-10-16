@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .model import Step, StepId, StepLabelPath
+from .runtime.control import GraphExecutionControl
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -101,6 +102,15 @@ class StepControl:
     # 运行控制接口：显式承载 skip 副作用，与只读上下文分离。
     step_id: StepId
     _state: GraphExecutionState
+    _execution_control: GraphExecutionControl = field(
+        default_factory=GraphExecutionControl, repr=False, kw_only=True
+    )
+
+    def stop_requested(self) -> bool:
+        return self._execution_control.stop_requested()
+
+    def require_running(self) -> None:
+        self._execution_control.require_running()
 
     def skip_step(self, step_id: StepId) -> None:
         self._state.request_skip(step_id)

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..model import StepId
     from ..observe import GraphObserver
     from .control import GraphExecutionControl
+    from .session_tree import LeafInvocation
     from .state import GraphExecutionState
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ class CompiledExecutionHost:
         state: GraphExecutionState,
         *,
         observer: GraphObserver | None,
-        run_leaf: Callable[[CompiledStep], None],
+        run_leaf: Callable[[CompiledStep], LeafInvocation],
         execution_control: GraphExecutionControl | None = None,
         record_composites_as_steps: bool = False,
     ) -> None:
@@ -52,6 +53,9 @@ class CompiledExecutionHost:
         }
         self._forwarded_skip_step_ids: set[StepId] = set()
         self._failures: list[Exception] = []
+        self.state._register_event_paths(
+            (node.id, node.context.label_path) for node in compilation._native_nodes
+        )
 
     def skipped_nodes(self) -> list[int]:
         nodes: list[int] = []
@@ -63,6 +67,9 @@ class CompiledExecutionHost:
             self.state.match_skip_request(step_id)
             nodes.append(index)
         return nodes
+
+    def skip_revision(self) -> int:
+        return self.state.skip_revision
 
     def resolve_conditions(
         self,
@@ -190,13 +197,13 @@ class CompiledExecutionHost:
             phase=GraphObservationPhase.AFTER_SUCCESS,
         )
 
-    def run_leaf(self, node: int) -> None:
+    def run_leaf(self, node: int) -> LeafInvocation:
         compiled_node = self.compilation._native_node(node)
         if not isinstance(compiled_node, CompiledStep):
             raise GraphError(
                 f"native scheduler submitted non-leaf node: {compiled_node.id}"
             )
-        self.run_leaf_callback(compiled_node)
+        return self.run_leaf_callback(compiled_node)
 
     def stop_requested(self) -> bool:
         return (

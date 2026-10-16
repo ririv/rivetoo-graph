@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
 
+    from .events import StepEventSink
     from .model import Graph, GraphMode, Step, StepId
     from .results import StepResult
 
@@ -58,9 +60,14 @@ class GraphExecution:
     step_log_paths: InitVar[Mapping[Step, Path] | None] = field(
         default=None, kw_only=True
     )
+    events: InitVar[StepEventSink | None] = field(default=None, kw_only=True)
 
-    def __post_init__(self, step_log_paths: Mapping[Step, Path] | None) -> None:
+    def __post_init__(
+        self, step_log_paths: Mapping[Step, Path] | None, events: StepEventSink | None
+    ) -> None:
         if not step_log_paths:
+            if events is not None:
+                self.execution_state._initialize_execution_inputs({}, events)
             return
         mounted_step_ids = self._index_mounted_step_ids()
         # 先完整校验再写入状态，避免某个引用无效时只绑定了一部分日志。
@@ -70,7 +77,7 @@ class GraphExecution:
             ): path
             for step, path in step_log_paths.items()
         }
-        self.execution_state._initialize_step_log_paths(resolved)
+        self.execution_state._initialize_execution_inputs(resolved, events)
 
     def compile(self) -> GraphCompilation:
         return compile_graph(self.graph, root_label=self.graph.display_label)
@@ -144,66 +151,66 @@ class GraphExecution:
                 f"failed to write graph execution output: {output_error}"
             )
 
+    def _compile_for_run(self, mode: GraphMode) -> GraphCompilation:
+        self.execution_control.require_running()
+        if mode not in ("dynamic", "compiled"):
+            raise GraphError(f"unsupported graph mode: {mode}")
+        return self.compile()
+
     def run(
         self,
         options: GraphRunOptions | None = None,
         *,
         mode: GraphMode = "dynamic",
     ) -> GraphExecutionState:
-        from .runtime import AsyncGraphExecutor, ParallelGraphExecutor
-
-        self.execution_control.require_running()
-        target_graph = self.compile()
-        match mode:
-            case "dynamic":
-                pass
-            case "compiled":
-                pass
-            case _:
-                raise GraphError(f"unsupported graph mode: {mode}")
+        from .runtime import ParallelGraphExecutor
 
         run_options = options or ThreadGraphRunOptions()
-        if not isinstance(
-            run_options,
-            (AsyncGraphRunOptions, ThreadGraphRunOptions),
-        ):
+        if isinstance(run_options, AsyncGraphRunOptions):
+            return asyncio.run(self.arun(run_options, mode=mode))
+        if not isinstance(run_options, ThreadGraphRunOptions):
             raise GraphError(
                 f"unsupported graph run options: {type(run_options).__name__}"
             )
+        target_graph = self._compile_for_run(mode)
         try:
-            if isinstance(run_options, AsyncGraphRunOptions):
-                result = AsyncGraphExecutor(
-                    self.execution_state,
-                    shared=self.shared,
-                    execution_control=self.execution_control,
-                    observer=run_options.observer,
-                    action_log=self.action_log,
-                    record_composites_as_steps=mode == "dynamic",
-                ).execute(
-                    target_graph,
-                    concurrency=run_options.concurrency,
-                )
-            elif isinstance(run_options, ThreadGraphRunOptions):
-                result = ParallelGraphExecutor(
-                    self.execution_state,
-                    shared=self.shared,
-                    execution_control=self.execution_control,
-                    observer=run_options.observer,
-                    action_log=self.action_log,
-                    record_composites_as_steps=mode == "dynamic",
-                ).execute(
-                    target_graph,
-                    workers=run_options.workers,
-                )
-            else:
-                raise GraphError(
-                    f"unsupported graph run options: {type(run_options).__name__}"
-                )
+            result = ParallelGraphExecutor(
+                self.execution_state,
+                shared=self.shared,
+                execution_control=self.execution_control,
+                observer=run_options.observer,
+                action_log=self.action_log,
+                record_composites_as_steps=mode == "dynamic",
+            ).execute(target_graph, workers=run_options.workers)
         except BaseException as execution_error:
-            self._write_execution_output(
-                mode=mode,
-                execution_error=execution_error,
-            )
+            self._write_execution_output(mode=mode, execution_error=execution_error)
+            raise
+        self._write_execution_output(mode=mode)
+        return result
+
+    async def arun(
+        self,
+        options: AsyncGraphRunOptions | None = None,
+        *,
+        mode: GraphMode = "dynamic",
+    ) -> GraphExecutionState:
+        """Execute asynchronous actions in the caller's event loop."""
+
+        from .runtime import AsyncGraphExecutor
+
+        run_options = options or AsyncGraphRunOptions()
+        target_graph = self._compile_for_run(mode)
+        try:
+            result = await AsyncGraphExecutor(
+                self.execution_state,
+                shared=self.shared,
+                execution_control=self.execution_control,
+                observer=run_options.observer,
+                action_log=self.action_log,
+                record_composites_as_steps=mode == "dynamic",
+            ).aexecute(target_graph, concurrency=run_options.concurrency)
+        except BaseException as execution_error:
+            self._write_execution_output(mode=mode, execution_error=execution_error)
             raise
         self._write_execution_output(mode=mode)
         return result
