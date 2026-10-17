@@ -774,8 +774,8 @@ def test_runtime_condition_true_waits_for_source_step(mode: GraphMode) -> None:
                     ConditionalPrerequisite(
                         step=configure,
                         condition=runtime_condition(
-                            when=lambda ctx: ctx.require_value(probe) == "miss",
-                            reads=(probe,),
+                            when=lambda result: result.unwrap() == "miss",
+                            inputs=(probe,),
                         ),
                     ),
                 )
@@ -806,7 +806,7 @@ def test_runtime_step_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
     second = Step(label="second", action=lambda: None)
     target = Step(
         label="target",
-        when=runtime_condition(reads=(probe,), when=_condition),
+        when=runtime_condition(inputs=(probe,), when=_condition),
         action=lambda: None,
     )
     graph = Graph.from_wiring(
@@ -855,7 +855,7 @@ def test_runtime_edge_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
                     ConditionalPrerequisite(
                         step=source,
                         condition=runtime_condition(
-                            reads=(probe,),
+                            inputs=(probe,),
                             when=_condition,
                         ),
                     ),
@@ -875,7 +875,7 @@ def test_runtime_edge_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
 def test_execution_render_does_not_reevaluate_runtime_condition() -> None:
     evaluations = 0
 
-    def _condition(_ctx: object) -> bool:
+    def _condition() -> bool:
         nonlocal evaluations
         evaluations += 1
         return True
@@ -925,8 +925,8 @@ def test_runtime_condition_false_does_not_require_source_result(
                     ConditionalPrerequisite(
                         step=configure,
                         condition=runtime_condition(
-                            when=lambda ctx: ctx.require_value(probe) == "miss",
-                            reads=(probe,),
+                            when=lambda result: result.unwrap() == "miss",
+                            inputs=(probe,),
                         ),
                     ),
                 )
@@ -970,8 +970,8 @@ def test_runtime_condition_false_does_not_wait_for_source(mode: GraphMode) -> No
                     ConditionalPrerequisite(
                         step=configure,
                         condition=runtime_condition(
-                            when=lambda ctx: ctx.require_value(probe) == "miss",
-                            reads=(probe,),
+                            when=lambda result: result.unwrap() == "miss",
+                            inputs=(probe,),
                         ),
                     ),
                 )
@@ -1014,7 +1014,7 @@ def test_parent_waits_for_all_steps_in_conditionally_connected_child(
                 after=(
                     ConditionalPrerequisite(
                         step=source,
-                        condition=runtime_condition(when=lambda _ctx: False),
+                        condition=runtime_condition(when=lambda: False),
                     ),
                 )
             ),
@@ -1060,7 +1060,7 @@ def test_parent_prerequisite_blocks_all_conditionally_connected_child_steps(
                 after=(
                     ConditionalPrerequisite(
                         step=source,
-                        condition=runtime_condition(when=lambda _ctx: False),
+                        condition=runtime_condition(when=lambda: False),
                     ),
                 )
             ),
@@ -1169,7 +1169,7 @@ def test_parent_waits_for_all_steps_in_child_with_disabled_step(
     source = Step(label="source", action=_source)
     disabled = Step(
         label="disabled",
-        when=runtime_condition(when=lambda _ctx: False),
+        when=runtime_condition(when=lambda: False),
         action=lambda: None,
     )
     target = Step(label="target", action=lambda: None)
@@ -1355,8 +1355,8 @@ def test_async_runtime_condition_false_does_not_wait_for_source(
                     ConditionalPrerequisite(
                         step=configure,
                         condition=runtime_condition(
-                            when=lambda ctx: ctx.require_value(probe) == "miss",
-                            reads=(probe,),
+                            when=lambda result: result.unwrap() == "miss",
+                            inputs=(probe,),
                         ),
                     ),
                 )
@@ -1531,8 +1531,8 @@ def test_step_when_false_skips_step_and_allows_downstream_continue(
     optional = Step(
         label="optional",
         when=runtime_condition(
-            reads=(probe,),
-            when=lambda ctx: bool(ctx.require_value(probe)),
+            inputs=(probe,),
+            when=lambda result: bool(result.unwrap()),
         ),
         action=LeafAction(fn=lambda _ctx: "optional"),
     )
@@ -1570,8 +1570,8 @@ def test_dynamic_step_when_false_skips_graph_step() -> None:
     stage = Step(
         label="stage",
         when=runtime_condition(
-            reads=(probe,),
-            when=lambda ctx: bool(ctx.require_value(probe)),
+            inputs=(probe,),
+            when=lambda result: bool(result.unwrap()),
         ),
         action=Graph.from_wiring(
             label="stage",
@@ -1606,8 +1606,8 @@ def test_compiled_runtime_when_false_matches_dynamic_for_graph_step() -> None:
     stage = Step(
         label="stage",
         when=runtime_condition(
-            reads=(probe,),
-            when=lambda ctx: bool(ctx.require_value(probe)),
+            inputs=(probe,),
+            when=lambda result: bool(result.unwrap()),
         ),
         action=Graph.from_wiring(label="stage", wiring=(configure.wire(),)),
     )
@@ -1645,8 +1645,8 @@ def test_compiled_runtime_when_true_activates_composite() -> None:
     stage = Step(
         label="stage",
         when=runtime_condition(
-            reads=(probe,),
-            when=lambda ctx: bool(ctx.require_value(probe)),
+            inputs=(probe,),
+            when=lambda result: bool(result.unwrap()),
         ),
         action=Graph.from_wiring(label="stage", wiring=(configure.wire(),)),
     )
@@ -1681,8 +1681,8 @@ def test_graph_execution_run_logs_step_skip_by_condition(
     build = Step(
         label="build",
         when=runtime_condition(
-            reads=(probe,),
-            when=lambda ctx: not bool(ctx.require_value(probe)),
+            inputs=(probe,),
+            when=lambda result: not bool(result.unwrap()),
         ),
         action=LeafAction(fn=lambda _ctx: "built"),
     )
@@ -1699,7 +1699,7 @@ def test_graph_execution_run_logs_step_skip_by_condition(
         execution_state=GraphExecutionState(results=GraphResultStore()),
     ).run(options=ThreadGraphRunOptions(workers=1))
 
-    assert "Condition: skip build (reads=(0,); value=false)" in caplog.text
+    assert "Condition: skip build (inputs=(0,); value=false)" in caplog.text
 
 
 def test_graph_execution_run_writes_execution_render_to_run_log_dir(
@@ -1709,8 +1709,8 @@ def test_graph_execution_run_writes_execution_render_to_run_log_dir(
     build = Step(
         label="build",
         when=runtime_condition(
-            reads=(probe,),
-            when=lambda ctx: not bool(ctx.require_value(probe)),
+            inputs=(probe,),
+            when=lambda result: not bool(result.unwrap()),
         ),
         action=LeafAction(fn=lambda _ctx: None),
     )

@@ -59,7 +59,7 @@ GraphExecutionState
 - Graph 显式声明 label 时，该值优先
 
 显式接线只保存在 `Graph.edges` 中。规范化后的 `Graph` 不接受 `StepWiring`，
-Step 本身不保存 `after`。运行时条件的 `reads` 是另一类显式阻塞关系，同样参与
+Step 本身不保存 `after`。运行时条件的 `inputs` 是另一类显式阻塞关系，同样参与
 校验与调度，不能忽略。
 
 ## `Step`
@@ -88,7 +88,7 @@ runtime 消费三种 action：
 
 - 同一个 Step 不能在同一张 Graph 中挂载两次
 - 同一个 Step 可以在不同 Graph 中使用不同接线
-- 普通边与条件 `reads` 的跨图引用会在 Graph 构造时失败；跨子图同步使用能力端口
+- 普通边与条件 `inputs` 的跨图引用会在 Graph 构造时失败；跨子图同步使用能力端口
 
 ## 身份与展示
 
@@ -328,12 +328,12 @@ Step.when 和 ConditionalEdge 只接受 RuntimeCondition。
 
 ```python
 cache_miss = runtime_condition(
-    reads=(cache_probe,),
-    when=lambda ctx: not bool(ctx.require_value(cache_probe)),
+    inputs=(cache_probe,),
+    when=lambda result: not bool(result.unwrap()),
 )
 ```
 
-`reads` 不是普通 prerequisite，但会阻塞条件求值，因此与 Graph edges 一起参与环检测，
+`inputs` 不是普通 prerequisite，但会阻塞条件求值，因此与 Graph edges 一起参与环检测，
 并在引用两端均已进入当前 wiring 后参与入口和出口计算。
 
 ## `GraphExecution`
@@ -443,6 +443,11 @@ def compile_action(run_ctx: StepRunContext) -> None:
 执行状态的 `results`、action 上下文和 observation event 均只暴露 `GraphResultView`，
 提供 `get/require/has`，没有 `record`。这些入口共享同一个实时视图，不会为每个 Step
 复制结果表。`GraphExecutionState.snapshot()` 则复制当时的记录，并以只读视图公开。
+
+成功结果统一包装为 `Some(value)`；`get` 和上下文 `result` 在缺失时仍返回 None，
+`require` 则报错。运行时条件不再查询上下文，而是按
+`Option = Some | Nothing` 接收[结果输入](./conditional_steps.md#结果输入)。
+inputs 会自动开启结果记录；仅在 action 中查询结果时，仍须配置 GraphResultStore。
 
 只读限制针对结果表，不是对返回对象的深度冻结：返回值仍是原对象，不应在发布结果后
 继续修改其中的可变内容。需要共同修改的数据使用独立的共享状态，不改写步骤结果。

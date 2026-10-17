@@ -179,8 +179,8 @@ def test_runtime_condition_reads_define_wiring_boundaries() -> None:
         label="conditional",
         action=LeafAction(fn=_noop),
         when=runtime_condition(
-            reads=(probe,),
-            when=lambda ctx: bool(ctx.require_value(probe)),
+            inputs=(probe,),
+            when=lambda result: bool(result.unwrap()),
         ),
     )
 
@@ -281,7 +281,7 @@ def test_step_function_wraps_labeled_graph_without_expanding_it() -> None:
 
 def test_graph_step_wraps_graph_with_mount_parameters() -> None:
     child = Graph(label="child")
-    condition = runtime_condition(when=lambda _ctx: True)
+    condition = runtime_condition(when=lambda: True)
 
     default_mount = child.step()
     configured_mount = child.step(label="build", when=condition)

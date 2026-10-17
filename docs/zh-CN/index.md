@@ -58,7 +58,7 @@ from rivetoo_graph import Graph, GraphExecution, Step
   - 可选展示 label、条件，以及 Python action、Python 子图或完整 Rust 原生子图
 - `Graph.edges`
   - 显式接线关系
-- `RuntimeCondition.reads`
+- `RuntimeCondition.inputs`
   - 条件求值前必须完成的结果依赖
 - `StepWiring` / `GraphWiring`
   - 声明期组合结构

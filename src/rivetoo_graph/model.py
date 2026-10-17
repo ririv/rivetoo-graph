@@ -65,7 +65,7 @@ type StepLabelPath = tuple[str, ...]
 type GraphMode = Literal["dynamic", "compiled"]
 
 if TYPE_CHECKING:
-    from .results import StepReadContext, StepRunContext
+    from .results import StepRunContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,27 +168,30 @@ class LeafAction:
 # Python 只持有原生子图的整体边界，不暴露其中的 Rust action。
 type StepAction = LeafAction | Graph | NativeGraph
 type StepActionInput = StepAction | LeafActionCallable
-type ConditionalEdgePredicate = Callable[["StepReadContext"], bool]
+# Step 尚不携带返回值类型；参数按 inputs 顺序传入 Option[object]。
+# 不读取 callback 的类型标注来推断调用约定。
+type ConditionalEdgePredicate = Callable[..., bool]
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeCondition:
     """必须在执行期求值的条件及其显式结果依赖。
 
-    `reads` 不属于普通 `after` 边，但条件只有在这些 step 完成后才可求值，
+    `inputs` 不属于普通 `after` 边，但条件只有在这些 step 完成后才可求值，
     因而它们同样参与 DAG 环检测和 runtime ready 判定。
+    when 按 inputs 的顺序接收 Option 结果；零个输入时不传参数。
     """
 
     when: ConditionalEdgePredicate
-    reads: tuple[Step, ...] = ()
+    inputs: tuple[Step, ...] = ()
 
 
 def runtime_condition(
     *,
     when: ConditionalEdgePredicate,
-    reads: tuple[Step, ...] = (),
+    inputs: tuple[Step, ...] = (),
 ) -> RuntimeCondition:
-    return RuntimeCondition(when=when, reads=reads)
+    return RuntimeCondition(when=when, inputs=inputs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +219,7 @@ def _validated_blocking_arcs(
     """Validate domain edges while projecting every blocking relationship."""
 
     # 单次投影全部阻塞关系：V 为 step 数，E 为 graph edge 数，B 为所有
-    # RuntimeCondition.reads 的引用总数，时间复杂度为 O(V + E + B)。
+    # RuntimeCondition.inputs 的引用总数，时间复杂度为 O(V + E + B)。
     seen: set[Arc[Step]] = set()
 
     def unique_arc(source: Step, target: Step) -> Arc[Step] | None:
@@ -274,14 +277,14 @@ def _validated_blocking_arcs(
             edge.condition,
             RuntimeCondition,
         ):
-            for read_step in edge.condition.reads:
+            for read_step in edge.condition.inputs:
                 arc = unique_arc(read_step, edge.target)
                 if arc is not None:
                     yield arc
 
     for step in steps:
         if isinstance(step.when, RuntimeCondition):
-            for read_step in step.when.reads:
+            for read_step in step.when.inputs:
                 arc = unique_arc(read_step, step)
                 if arc is not None:
                     yield arc
@@ -405,7 +408,7 @@ class GraphWiring:
         sources: set[Step] = set()
         targets: set[Step] = set()
 
-        # `reads` 是条件求值依赖，因此也会改变物化图的真实入口和出口。
+        # `inputs` 是条件求值依赖，因此也会改变物化图的真实入口和出口。
         # DSL 中间态可能暂时引用尚未组合进来的 step；只有引用两端均已进入
         # 当前 wiring 时，才把这条关系计入当前组合边界。
         for edge in self.edges:
@@ -415,13 +418,13 @@ class GraphWiring:
                 edge.condition,
                 RuntimeCondition,
             ):
-                for read_step in edge.condition.reads:
+                for read_step in edge.condition.inputs:
                     if read_step in known_steps and edge.target in known_steps:
                         sources.add(read_step)
                         targets.add(edge.target)
         for step in self.steps:
             if isinstance(step.when, RuntimeCondition):
-                for read_step in step.when.reads:
+                for read_step in step.when.inputs:
                     if read_step in known_steps:
                         sources.add(read_step)
                         targets.add(step)

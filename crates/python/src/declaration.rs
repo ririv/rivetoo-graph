@@ -464,7 +464,7 @@ impl<'py> Collector<'py> {
         graph_index: usize,
     ) -> PyResult<ConditionId> {
         let mut reads = Vec::new();
-        for read in condition.getattr("reads")?.try_iter()? {
+        for read in condition.getattr("inputs")?.try_iter()? {
             reads.push(NodeId::new(self.require_local_node(graph_index, &read?)?));
         }
         let condition_id = ConditionId::new(self.conditions.len());

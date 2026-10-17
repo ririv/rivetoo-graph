@@ -91,6 +91,14 @@ class GraphExecutionState:
             with self._lock:
                 self._events.paths.update(paths)
 
+    def _enable_results(self) -> None:
+        """Enable recording before executing a graph with condition inputs."""
+        from ..results import GraphResultStore
+
+        with self._lock:
+            if self._results is None:
+                self._results = GraphResultStore()
+
     def _emit(self, step_id: StepId, phase: StepExecutionPhase) -> None:
         if self._events is None:
             return

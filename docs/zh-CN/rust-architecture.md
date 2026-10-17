@@ -142,7 +142,7 @@ prerequisite 同样使用和类型区分：
 - conditional
 
 运行时条件由 `ConditionId` 引用；predicate 对象保留在 Python adapter，core 只保存
-其显式 `reads`。因此 core 可以判断阻塞关系和环，但不会解释 Python 业务函数。
+其显式结果依赖（内部 reads 索引，对应公开 API 的 inputs）。因此 core 可以判断阻塞关系和环，但不会解释 Python 业务函数。
 
 ## 领域边界
 

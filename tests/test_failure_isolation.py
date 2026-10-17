@@ -97,7 +97,7 @@ def test_multiple_independent_errors_are_reported_together(execute):
 def test_condition_exception_blocks_all_users_without_stopping_other_work(execute):
     calls = []
 
-    def broken(_ctx) -> bool:
+    def broken() -> bool:
         calls.append("condition")
         raise RuntimeError("predicate failed")
 
@@ -133,7 +133,7 @@ def test_condition_does_not_read_failed_action_result(execute):
             producer,
             Step(
                 lambda: None,
-                when=runtime_condition(when=needs_result, reads=(producer,)),
+                when=runtime_condition(when=needs_result, inputs=(producer,)),
             ),
             Step(lambda: calls.append("good")),
         )
@@ -149,7 +149,7 @@ def test_inactive_conditional_edge_does_not_propagate_failure(execute):
     calls = []
     producer = Step(fail)
 
-    def disabled(_ctx) -> bool:
+    def disabled() -> bool:
         return False
 
     consumer = Step(lambda: calls.append("consumer"))
@@ -334,7 +334,7 @@ def test_cancellation_from_condition_waits_for_started_async_action():
         steps=(
             Step(survive),
             ready,
-            Step(lambda: None, when=runtime_condition(when=cancel, reads=(ready,))),
+            Step(lambda: None, when=runtime_condition(when=cancel, inputs=(ready,))),
         )
     )
     plan = GraphExecution(graph=graph, execution_control=control)

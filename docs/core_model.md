@@ -49,7 +49,7 @@ is displayed as `<unlabeled>`; an unlabeled nested graph uses its mounting Step'
 label. An explicit Graph label takes precedence.
 
 Explicit wiring lives in `Graph.edges`. A normalized Graph does not accept
-StepWiring objects, and Step does not store `after`. Runtime-condition `reads`
+StepWiring objects, and Step does not store `after`. Runtime-condition `inputs`
 are another explicit source of blocking relations and participate in validation
 and scheduling.
 
@@ -78,12 +78,12 @@ Callables are normalized to `LeafAction`. The three action forms are:
 
 Duplicate labels are legal. Declaration identity is the Step object itself.
 The same Step cannot be mounted twice in one Graph, but can be reused in separate
-Graphs with different wiring. Ordinary edges and condition reads cannot reference
+Graphs with different wiring. Ordinary edges and condition inputs cannot reference
 steps outside their graph; cross-subgraph synchronization uses capability ports.
 
 ## Identity and presentation
 
-- Step references identify declarations for wiring, condition reads, and results.
+- Step references identify declarations for wiring, condition inputs, and results.
 - `StepId` identifies one mounted position, such as `0`, `1`, or `1.0`.
   Compilation, scheduling, and result storage use this identity.
 - Step and Graph labels are only presentation.
@@ -248,12 +248,12 @@ RuntimeCondition is evaluated during execution.
 
 ```python
 cache_miss = runtime_condition(
-    reads=(cache_probe,),
-    when=lambda ctx: not bool(ctx.require_value(cache_probe)),
+    inputs=(cache_probe,),
+    when=lambda result: not bool(result.unwrap()),
 )
 ```
 
-`reads` blocks condition evaluation. It participates in cycle detection and in
+`inputs` blocks condition evaluation. It participates in cycle detection and in
 wiring-boundary calculation once both endpoints are present, even though it is
 not an ordinary prerequisite.
 
@@ -330,6 +330,12 @@ can be recorded only once. Execution state, action contexts, and observation eve
 expose a concrete `GraphResultView` with `get/require/has`, without `record`. They
 share one live view rather than copying the table for each Step. A state snapshot
 copies the records and exposes a read-only view of that copy.
+
+Successful results use `Some(value)`; `get` and context `result` return None when
+absent, while `require` raises. Runtime conditions use the explicit
+`Option = Some | Nothing` input contract instead of querying the context; see
+[result inputs](./conditional_steps.md#result-inputs). Inputs enable result recording
+automatically; action-only result queries still require a configured GraphResultStore.
 
 Read-only access applies to the table, not to the returned objects: values are not
 deep-copied or frozen. Treat published results as immutable; use separate shared

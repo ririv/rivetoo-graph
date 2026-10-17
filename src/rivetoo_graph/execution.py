@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from .events import StepEventSink
     from .model import Graph, GraphMode, Step, StepId
-    from .results import StepResult
+    from .option import Some
 
 
 @dataclass(slots=True)
@@ -82,7 +82,7 @@ class GraphExecution:
     def compile(self) -> GraphCompilation:
         return compile_graph(self.graph, root_label=self.graph.display_label)
 
-    def require_result(self, step: Step) -> StepResult:
+    def require_result(self, step: Step) -> Some[object]:
         """按声明 step 引用读取本次图挂载中的执行结果。"""
 
         results = self.execution_state.results

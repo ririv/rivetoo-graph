@@ -53,12 +53,12 @@ def compiled_node_id(ref: CompiledNodeRef) -> StepId:
 class CompiledRuntimeCondition:
     """运行期 predicate 及其已经映射到编译节点的结果依赖。
 
-    `reads` 中的节点全部终态后，runtime 才能调用 `when`。predicate
-    使用原声明作用域读取结果，编译过程不会提前求值。
+    `inputs` 中的节点全部终态后，runtime 才能调用 `when`。predicate
+    按声明顺序接收该挂载对应的 Option 结果，编译过程不会提前求值。
     """
 
     when: ConditionalEdgePredicate
-    reads: tuple[CompiledNodeRef, ...]
+    inputs: tuple[CompiledNodeRef, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,7 +496,7 @@ def _validate_compiled_condition(
 ) -> None:
     """验证运行期条件读取的每个结果来源仍存在于编译产物中。"""
 
-    for read in condition.reads:
+    for read in condition.inputs:
         _require_compiled_node(nodes, read)
 
 
@@ -515,7 +515,7 @@ def _materialize_native_execution_graph(
 
     def register_condition(condition: CompiledRuntimeCondition) -> int:
         condition_index = len(condition_reads)
-        condition_reads.append([node_indexes[read.id] for read in condition.reads])
+        condition_reads.append([node_indexes[read.id] for read in condition.inputs])
         conditions.append(condition)
         return condition_index
 
@@ -677,7 +677,7 @@ def _materialize_native_compilation(
     compiled_conditions = tuple(
         CompiledRuntimeCondition(
             when=cast("ConditionalEdgePredicate", predicate),
-            reads=tuple(refs_by_declaration[read] for read in reads),
+            inputs=tuple(refs_by_declaration[read] for read in reads),
         )
         for predicate, reads in zip(predicates, condition_reads, strict=True)
     )

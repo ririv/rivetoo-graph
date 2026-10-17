@@ -67,7 +67,7 @@ A static node rule may coexist with runtime when: static pruning happens first.
 
 ### Runtime condition
 
-Before its reads are ready, the Step is not ready. A true condition enables normal
+Before its inputs are ready, the Step is not ready. A true condition enables normal
 execution. A false condition puts the Step in the Skipped terminal state without
 invoking its action or producing an action result.
 
@@ -100,7 +100,7 @@ activation conditions. The session manages node state, including failures,
 blocking, and condition-result caching. Python evaluates predicates only when
 requested in a batch and returns results through advance.
 
-- Reads must be satisfied before evaluation; failed reads block the affected node.
+- Inputs must be satisfied before evaluation; failed inputs block the affected node.
 - Once the condition is false, other after prerequisites are not awaited.
 - A skipped node no longer blocks downstream work by waiting on unused prerequisites.
 - A composite remains a real subgraph boundary, not a no-op leaf.
@@ -115,11 +115,11 @@ CompiledComposite, retaining prerequisites, successors, observation, and runtime
 when. Activation releases direct children; false skips the subtree. Empty composites
 still retain their dependency boundary.
 
-## Reads versus action prerequisites
+## Inputs versus action prerequisites
 
-RuntimeCondition.reads names the results needed to decide whether the Step is
+RuntimeCondition.inputs names the results needed to decide whether the Step is
 enabled. Ordinary after prerequisites constrain execution only if it is enabled.
-Reads must refer to Steps in the current graph and participate in DAG validation.
+Inputs must refer to Steps in the current graph and participate in DAG validation.
 
 ```python
 probe = Step(probe_cache, label="probe")
@@ -129,8 +129,8 @@ heavy_build = Step(
     build_source,
     label="heavy_build",
     when=runtime_condition(
-        reads=(probe,),
-        when=lambda ctx: bool(ctx.require_value(probe)),
+        inputs=(probe,),
+        when=lambda result: bool(result.unwrap()),
     ),
 )
 graph = Graph.from_wiring(
@@ -153,11 +153,55 @@ A recorded result is reused while other after prerequisites remain pending.
 
 If the only model were a flat after list, it could not distinguish the early probe
 needed for the decision from preparations needed only for execution. That is why
-reads is separate.
+inputs is separate.
 
-Reads also participates in wiring entry/exit calculation. Do not repeat the same
+Inputs also participates in wiring entry/exit calculation. Do not repeat the same
 probe in ordinary after solely to make the condition wait; declare after only for
 independent ordering constraints.
+
+## Result inputs
+
+`inputs` declares both dependencies and positional predicate arguments:
+
+```python
+count_step = Step(lambda: 42)
+approval_step = Step(lambda: True)
+
+def should_run(count: Option[object], approval: Option[object]) -> bool:
+    return count.unwrap() == 42 and approval.unwrap_or(False) is True
+
+condition = runtime_condition(inputs=(count_step, approval_step), when=should_run)
+```
+
+When both Steps execute successfully, the predicate receives `Some(42)` and
+`Some(True)`. The numbers and booleans are actual action return values, not result
+presence markers.
+
+No separate `after` is needed for these inputs. A predicate with no inputs takes
+no arguments: `runtime_condition(when=lambda: True)`.
+Declaring inputs automatically enables result recording before their producers run.
+Graphs without inputs retain optional result recording.
+
+`Option[T]` is `Some[T] | Nothing`:
+
+- `Some(value)` contains a recorded result. `Some(None)` is a successful return of None.
+- `Nothing()` means no recorded result, such as a skipped Step or a composite with no
+  leaf return value. It is not a failed producer: producer failure blocks the consumer.
+- `is_some()` and `is_none()` test presence.
+- `unwrap()` returns the value, or raises ValueError for Nothing.
+- `unwrap_or(default)` substitutes only for Nothing, never for Some(None) or Some(False).
+- `bool(option)` raises TypeError. Test presence or unwrap explicitly.
+
+Inputs reference Steps in the current graph. Reusing that graph under two parents
+binds each input to its own mount, not to another execution of the same declaration.
+Static pruning of an input is a compilation error, not Nothing.
+Input order and duplicates are preserved, so `inputs=(probe, probe)` supplies two
+arguments even though they wait for the same producer.
+
+Step is not generic today: annotations should use `Option[object]`, then validate or
+narrow the payload as needed. An annotation does not select a different calling
+convention. Ordinary action contexts keep their result lookup APIs; their successful
+result wrapper is also Some, so values are not wrapped twice.
 
 ## Boundaries
 

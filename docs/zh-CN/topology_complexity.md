@@ -39,19 +39,19 @@ Python 的 `DirectedTopology` 并不是 Rust topology 的逐方法 FFI 包装。
 
 - V：本层 Graph 的 Step 数量。
 - E：本层显式边数量。
-- B：条件边和 `Step.when` 中所有 `RuntimeCondition.reads` 引用总数。
+- B：条件边和 `Step.when` 中所有 `RuntimeCondition.inputs` 引用总数。
 - A：去重后的本层阻塞 arc 数量，A ≤ E + B。
 
 本层阻塞关系来自普通边、条件边的来源节点和运行时条件的读取依赖。
 条件边在声明时保守参与无环校验，即使其静态条件在随后编译时为假。
-`reads` 的遍历来自显式数据依赖，不是拓扑排序额外制造的业务关系。
+`inputs` 的遍历来自显式数据依赖，不是拓扑排序额外制造的业务关系。
 
 当前 [model.py](../../src/rivetoo_graph/model.py) 的实际链路是：
 
 ```text
 验证 Step 并分配本层整数索引
     ↓
-_validated_blocking_arcs：遍历边与 reads，去重并生成 Arc
+_validated_blocking_arcs：遍历边与 inputs，去重并生成 Arc
     ↓
 物化 blocking_arcs 元组
     ↓
@@ -84,7 +84,7 @@ Rust collector 不进行逐节点、逐边静态查询；有规则时单次查�
 Rust 编译器随后校验完整执行 DAG，包括：
 
 - 声明期已知子图与 composite 的依赖；
-- 运行时条件的 reads；
+- 运行时条件的 inputs；
 - lower 后的跨子图 capability bindings。
 
 若最终执行节点数为 N、展开后的阻塞关系数为 L，纯 DAG 校验时间和空间为
@@ -103,7 +103,7 @@ G 个图作用域、V 个声明节点、C 个 composite 的可达性遍历时间
 完成校验和可达性检查后，根据完整声明选择路径，而不是只看根 Python Graph.static：
 
 - 所有作用域可达、所有节点活跃、所有运行时条件均被引用：保留身份，直接将条件与
-  能力边移动到层级编译，不生成裁剪映射、不复制条件 reads。
+  能力边移动到层级编译，不生成裁剪映射、不复制条件 inputs。
 - 否则走投影路径，移除失效节点、作用域和未引用条件，并重新编号；失效祖先仍会
   移除整个后代子树。
 
@@ -142,7 +142,7 @@ Python 结果物化，不包含 Graph 构造、每轮计时前的 GC，也不执
 一次边界计算读取：
 
 - 显式普通边与条件边；
-- 条件边和 Step 的运行时条件 reads；
+- 条件边和 Step 的运行时条件 inputs；
 - 本层 Step 顺序，用于返回有序边界。
 
 时间为 O(V + E + B)，辅助空间为 O(V)。`entries` 与 `exits` 是独立属性，

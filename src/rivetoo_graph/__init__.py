@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         step,
     )
     from .observe import GraphObservationEvent, GraphObserver
+    from .option import Nothing, Option, Some
     from .render import (
         GraphRenderFormat,
         GraphRenderOptions,
@@ -81,7 +82,6 @@ if TYPE_CHECKING:
         ParentGraphStepRef,
         StepControl,
         StepReadContext,
-        StepResult,
         StepRunContext,
     )
     from .runtime import (
@@ -207,6 +207,7 @@ _EXPORT_GROUPS = (
             "GraphRenderOptions",
         ),
     ),
+    (".option", ("Some", "Nothing", "Option")),
     (
         ".results",
         (
@@ -216,7 +217,6 @@ _EXPORT_GROUPS = (
             "ParentGraphStepRef",
             "StepReadContext",
             "StepControl",
-            "StepResult",
             "StepRunContext",
         ),
     ),
@@ -354,7 +354,9 @@ __all__ = [
     "ParentGraphStepRef",
     "StepReadContext",
     "StepControl",
-    "StepResult",
+    "Some",
+    "Nothing",
+    "Option",
     "StepRunContext",
     "GraphObservationEvent",
     "GraphObserver",

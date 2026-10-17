@@ -142,7 +142,7 @@ C (succeeded) → D (continues)
 The overall run still reports failure.
 
 - Finished, Skipped, Failed, and Blocked are distinct states.
-- Active conditional dependencies and condition reads propagate failure;
+- Active conditional dependencies and condition inputs propagate failure;
   inactive conditional edges do not.
 - A predicate exception blocks affected nodes instead of reading missing results.
 - An entered subgraph lets unrelated internal branches finish, then reports
@@ -213,7 +213,7 @@ At construction, Graph validates nonempty explicitly supplied labels, Step-only
 node membership, duplicate mounting, local edge endpoints, and local acyclicity.
 Omitting a label is valid.
 
-Local explicit edges and runtime reads are projected to integer nodes and blocking
+Local explicit edges and runtime inputs are projected to integer nodes and blocking
 arcs, then checked by Rust `dag_cycle`, not Python DirectedTopology/DAGTopology.
 Cross-subgraph capability bindings are checked in the final lowered DAG.
 See [topology complexity](./topology_complexity.md).

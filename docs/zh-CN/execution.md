@@ -170,7 +170,7 @@ C（成功）→ D（继续执行）
 ```
 
 - Rust session 区分 `Finished`、`Skipped`、`Failed`、`Blocked`。失败不能伪装为成功或主动跳过。
-- 激活的条件依赖和 `RuntimeCondition.reads` 传播失败；未激活的条件边不传播失败。
+- 激活的条件依赖和 `RuntimeCondition.inputs` 传播失败；未激活的条件边不传播失败。
   条件函数自身抛错时，相关节点被阻断，不会读取缺失的 action 结果。
 - 已进入的子图让内部无关分支执行完，再汇总为失败；不会触发 `AFTER_SUCCESS`。
   依赖整个子图的节点被阻断。尚未进入就被阻断的子图，其全部后代也标记为 `blocked`。

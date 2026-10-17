@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .model import Step, StepId, StepLabelPath
+from .option import Some
 from .runtime.control import GraphExecutionControl
 
 if TYPE_CHECKING:
@@ -12,11 +13,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from .runtime import GraphExecutionState
-
-
-@dataclass(frozen=True, slots=True)
-class StepResult:
-    value: object | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,10 +76,10 @@ class StepReadContext:
             raise RuntimeError("step results are not enabled for this graph run")
         return self.results
 
-    def result(self, ref: StepResultRef) -> StepResult | None:
+    def result(self, ref: StepResultRef) -> Some[object] | None:
         return self._require_results().get(self._resolve_step_id(ref))
 
-    def require_result(self, ref: StepResultRef) -> StepResult:
+    def require_result(self, ref: StepResultRef) -> Some[object]:
         return self._require_results().require(self._resolve_step_id(ref))
 
     def value(self, ref: StepResultRef) -> object | None:
@@ -125,10 +121,10 @@ class GraphResultView:
 
     _store: GraphResultStore = field(repr=False)
 
-    def get(self, step_id: StepId) -> StepResult | None:
+    def get(self, step_id: StepId) -> Some[object] | None:
         return self._store.get(step_id)
 
-    def require(self, step_id: StepId) -> StepResult:
+    def require(self, step_id: StepId) -> Some[object]:
         return self._store.require(step_id)
 
     def has(self, step_id: StepId) -> bool:
@@ -143,7 +139,7 @@ class GraphResultStore:
     存储自身的锁保护；调用方不应通过执行状态的锁推断这里已经同步。
     """
 
-    _results: dict[StepId, StepResult] = field(default_factory=dict)
+    _results: dict[StepId, Some[object]] = field(default_factory=dict)
     _lock: threading.Lock = field(
         default_factory=threading.Lock,
         init=False,
@@ -163,13 +159,13 @@ class GraphResultStore:
         with self._lock:
             if step_id in self._results:
                 raise RuntimeError(f"step result already recorded for id: {step_id}")
-            self._results[step_id] = StepResult(value=value)
+            self._results[step_id] = Some(value=value)
 
-    def get(self, step_id: StepId) -> StepResult | None:
+    def get(self, step_id: StepId) -> Some[object] | None:
         with self._lock:
             return self._results.get(step_id)
 
-    def require(self, step_id: StepId) -> StepResult:
+    def require(self, step_id: StepId) -> Some[object]:
         result = self.get(step_id)
         if result is None:
             raise RuntimeError(f"missing step result for id: {step_id}")
@@ -206,10 +202,10 @@ class StepRunContext:
             )
         return self._shared
 
-    def result(self, ref: StepResultRef) -> StepResult | None:
+    def result(self, ref: StepResultRef) -> Some[object] | None:
         return self.view.result(ref)
 
-    def require_result(self, ref: StepResultRef) -> StepResult:
+    def require_result(self, ref: StepResultRef) -> Some[object]:
         return self.view.require_result(ref)
 
     def value(self, ref: StepResultRef) -> object | None:

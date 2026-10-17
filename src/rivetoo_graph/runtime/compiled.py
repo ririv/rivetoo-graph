@@ -12,7 +12,7 @@ from ..compile import (
 from ..errors import GraphError
 from ..model import Graph
 from ..observe import GraphObservationEvent, GraphObservationPhase
-from ..results import StepReadContext
+from ..option import Nothing
 from .control import GraphExecutionStopped
 
 if TYPE_CHECKING:
@@ -42,6 +42,10 @@ class CompiledExecutionHost:
     ) -> None:
         self.compilation = compilation
         self.state = state
+        # inputs 是显式的数据依赖；执行生产者前即开启记录，无需调用方另配 store。
+        # 最多检查 C 个已编译条件，O(C) 时间、O(1) 额外空间，不扫描全部步骤。
+        if any(condition.inputs for condition in compilation._native_conditions):
+            state._enable_results()
         self.observer = observer
         self.run_leaf_callback = run_leaf
         self.execution_control = execution_control
@@ -137,15 +141,17 @@ class CompiledExecutionHost:
     def evaluate_condition(self, node: int, condition: int) -> bool:
         compiled_node = self.compilation._native_node(node)
         compiled_condition = self.compilation._native_condition(condition)
-        context = compiled_node.context
+        # 编译引用已经绑定到具体挂载；每个输入只查询一次，不创建条件上下文。
+        results = self.state.results
+        if compiled_condition.inputs and results is None:
+            raise GraphError("runtime condition requires an initialized result store")
+        inputs = (
+            ()
+            if results is None
+            else tuple(results.get(ref.id) for ref in compiled_condition.inputs)
+        )
         value = compiled_condition.when(
-            StepReadContext(
-                step_id=compiled_node.id,
-                label_path=context.label_path,
-                graph_step_ids=context.graph_step_ids,
-                ancestor_graph_scopes=context.ancestor_graph_scopes,
-                results=self.state.results,
-            )
+            *(Nothing() if result is None else result for result in inputs)
         )
         if not isinstance(value, bool):
             raise GraphError(
@@ -166,11 +172,11 @@ class CompiledExecutionHost:
             raise GraphError(
                 f"disabled compiled step has no runtime condition: {compiled_node.id}"
             )
-        reads = ",".join(str(read.id.segments) for read in condition.reads) or "-"
+        inputs = ",".join(str(ref.id.segments) for ref in condition.inputs) or "-"
         logger.debug(
-            "Condition: skip %s (reads=%s; value=false)",
+            "Condition: skip %s (inputs=%s; value=false)",
             ".".join(compiled_node.context.label_path),
-            reads,
+            inputs,
         )
 
     def enter_composite(self, node: int) -> None:

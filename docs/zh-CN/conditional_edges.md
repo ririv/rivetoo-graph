@@ -119,21 +119,23 @@ checks 和 build 都仍然存在。组合多个 StaticConditions 时，每条规
 ```python
 class RuntimeCondition:
     when: ConditionalEdgePredicate
-    reads: tuple[Step, ...] = ()
+    inputs: tuple[Step, ...] = ()
 ```
 
-predicate 接收 StepReadContext；reads 声明判定前需要哪些 Step 的结果。
+predicate 按 inputs 元组的顺序接收各个 `Option[object]`。框架在当前挂载中读取
+结果，不再传入 StepReadContext，也不需要重复写 Step 查询结果。
+缺失与解包规则见[结果输入](./conditional_steps.md#结果输入)。
 
 每个编译条件实例在当前 session 中最多求值一次。条件为真但来源尚未完成时，
 后续调度只等待来源，不重新调用 predicate。同一个 Python 条件对象或 callable 用于
 多个位置，不代表这些位置共用一次求值。
 
-## reads 与 after
+## inputs 与 after
 
 - 普通 after 表达目标 action 必须等待谁。
-- 条件的 reads 表达判断这条依赖是否成立前，需要读取谁。
+- 条件的 inputs 表达判断这条依赖是否成立前，需要读取谁。
 
-一个 Step 可以有多个条件边，各自读取不同结果，因此不能只用一份 after 代替 reads。
+一个 Step 可以有多个条件边，各自读取不同结果，因此不能只用一份 after 代替 inputs。
 
 ### 一个条件依赖
 
@@ -155,7 +157,7 @@ graph = Graph.from_wiring(
                     configure,
                     condition=runtime_condition(
                         when=cache_miss,
-                        reads=(compile_cache_probe,),
+                        inputs=(compile_cache_probe,),
                     ),
                 ),
             )
@@ -164,7 +166,7 @@ graph = Graph.from_wiring(
 )
 ```
 
-普通 probe 前置表达 action 顺序，reads 表达 predicate 输入。reads 本身已阻塞目标，
+普通 probe 前置表达 action 顺序，inputs 表达 predicate 输入。inputs 本身已阻塞目标，
 所以若没有独立的顺序意图，不必在普通 after 中重复 probe。这些边都不会禁用 configure。
 
 ### 多个条件依赖
@@ -174,22 +176,22 @@ build.wire(
     after=(
         ConditionalPrerequisite(
             configure,
-            condition=runtime_condition(when=config_miss, reads=(probe_config,)),
+            condition=runtime_condition(when=config_miss, inputs=(probe_config,)),
         ),
         ConditionalPrerequisite(
             prepare_assets,
-            condition=runtime_condition(when=assets_missing, reads=(probe_assets,)),
+            condition=runtime_condition(when=assets_missing, inputs=(probe_assets,)),
         ),
     )
 )
 ```
 
-两个 predicate 分别读取 probe_config 和 probe_assets，两份 reads 都参与环检测与调度。
+两个 predicate 分别读取 probe_config 和 probe_assets，两份 inputs 都参与环检测与调度。
 
 ## 编译与执行边界
 
 声明编译器处理静态条件，再将运行时条件编译为 prerequisite。session 只处理普通依赖、
-ConditionId、reads 与条件依赖；Python predicate 保存在 adapter 侧表。
+ConditionId、inputs 与条件依赖；Python predicate 保存在 adapter 侧表。
 
 编译后的 after 概念上类似：
 
@@ -197,14 +199,14 @@ ConditionId、reads 与条件依赖；Python predicate 保存在 adapter 侧表�
 CompiledStepRef(probe)
 CompiledConditionalDependency(
     node=CompiledStepRef(configure),
-    condition=CompiledRuntimeCondition(reads=(probe,), when=predicate),
+    condition=CompiledRuntimeCondition(inputs=(probe,), when=predicate),
 )
 ```
 
-调度器先等 reads，再判定是否等待 configure。不需要伪造 action 或通过 metadata 解释
+调度器先等 inputs，再判定是否等待 configure。不需要伪造 action 或通过 metadata 解释
 条件来源。子图内部使用相同规则。
 
-失败沿激活的条件边与 reads 传播，不沿未激活的条件边传播，详见
+失败沿激活的条件边与 inputs 传播，不沿未激活的条件边传播，详见
 [失败传播](./execution.md#失败传播)。
 
 ## 职责边界

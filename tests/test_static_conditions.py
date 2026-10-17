@@ -96,13 +96,11 @@ def test_static_and_runtime_rules_coexist_on_nodes_and_edges(mode: GraphMode) ->
     first = Step(lambda: calls.append("first"))
     last = Step(
         lambda: calls.append("last"),
-        when=runtime_condition(when=lambda _ctx: False),
+        when=runtime_condition(when=lambda: False),
     )
     graph = Graph(
         steps=(first, last),
-        edges=(
-            ConditionalEdge(first, last, runtime_condition(when=lambda _ctx: True)),
-        ),
+        edges=(ConditionalEdge(first, last, runtime_condition(when=lambda: True)),),
         static=StaticConditions(
             evaluator=evaluate,
             conditions={last: ENABLED, (first, last): ENABLED},
@@ -191,7 +189,7 @@ def test_static_pruning_does_not_leave_runtime_reads_without_a_source() -> None:
     consumer = Step(
         lambda: None,
         when=runtime_condition(
-            reads=(probe,), when=lambda ctx: bool(ctx.require_value(probe))
+            inputs=(probe,), when=lambda result: bool(result.unwrap())
         ),
     )
     graph = Graph(

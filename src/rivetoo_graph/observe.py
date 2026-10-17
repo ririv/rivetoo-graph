@@ -8,7 +8,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from .model import Graph, Step, StepId, StepLabelPath
-    from .results import GraphResultView, StepResult
+    from .option import Some
+    from .results import GraphResultView
 
 
 class GraphObservationPhase(StrEnum):
@@ -26,7 +27,7 @@ class GraphObservationEvent:
     graph_step_ids: Mapping[Step, StepId]
     results: GraphResultView | None = None
 
-    def result(self, step: Step) -> StepResult | None:
+    def result(self, step: Step) -> Some[object] | None:
         """按声明 step 引用读取当前观察图的实时结果。"""
 
         step_id = self.graph_step_ids.get(step)

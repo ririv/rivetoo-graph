@@ -137,21 +137,22 @@ other Step result. In [model.py](../src/rivetoo_graph/model.py), they contain:
 ```python
 class RuntimeCondition:
     when: ConditionalEdgePredicate
-    reads: tuple[Step, ...] = ()
+    inputs: tuple[Step, ...] = ()
 ```
 
-The predicate receives a StepReadContext. `reads` declares which Step results
-must be ready before evaluation.
+The predicate receives one `Option[object]` per declared input, in tuple order.
+Graph resolves the results in the current mount; no context lookup is required.
+See [result inputs](./conditional_steps.md#result-inputs) for absence and unwrapping.
 
 Each compiled condition instance is evaluated at most once in its session.
 If it is true but the source prerequisite is not yet complete, subsequent scheduling
 waits without rerunning the predicate. Reusing one Python RuntimeCondition or
 callable at several sites does not deduplicate those evaluations.
 
-## Why reads is not after
+## Why inputs is not after
 
 - An ordinary `after` prerequisite says what the target action must wait for.
-- A condition's `reads` says what is needed to determine whether a particular
+- A condition's `inputs` says what is needed to determine whether a particular
   conditional dependency exists.
 
 The condition must be evaluated before deciding whether its source is required.
@@ -177,7 +178,7 @@ graph = Graph.from_wiring(
                     configure,
                     condition=runtime_condition(
                         when=cache_miss,
-                        reads=(compile_cache_probe,),
+                        inputs=(compile_cache_probe,),
                     ),
                 ),
             )
@@ -186,8 +187,8 @@ graph = Graph.from_wiring(
 )
 ```
 
-The direct probe prerequisite expresses action ordering; reads expresses predicate
-inputs. Since reads already blocks the target until evaluation, repeating the same
+The direct probe prerequisite expresses action ordering; inputs expresses predicate
+inputs. Since inputs already blocks the target until evaluation, repeating the same
 ordinary prerequisite is unnecessary unless it serves an independently intended
 constraint. Neither dependency disables configure itself.
 
@@ -198,24 +199,24 @@ build.wire(
     after=(
         ConditionalPrerequisite(
             configure,
-            condition=runtime_condition(when=config_miss, reads=(probe_config,)),
+            condition=runtime_condition(when=config_miss, inputs=(probe_config,)),
         ),
         ConditionalPrerequisite(
             prepare_assets,
-            condition=runtime_condition(when=assets_missing, reads=(probe_assets,)),
+            condition=runtime_condition(when=assets_missing, inputs=(probe_assets,)),
         ),
     )
 )
 ```
 
-One predicate reads probe_config and the other reads probe_assets. A flat after
-list cannot describe which result belongs to which condition. Both reads sets
+One predicate inputs probe_config and the other inputs probe_assets. A flat after
+list cannot describe which result belongs to which condition. Both inputs sets
 participate in cycle detection and scheduling.
 
 ## Runtime and compilation boundary
 
 Rust declaration compilation removes static conditions and lowers runtime ones.
-The session sees ordinary dependencies, ConditionId values, reads, and compiled
+The session sees ordinary dependencies, ConditionId values, inputs, and compiled
 conditional prerequisites. Python predicates remain in adapter side tables.
 StaticCondition objects do not enter the runtime evaluation protocol.
 
@@ -225,16 +226,16 @@ Conceptually, a compiled Step's after list can contain:
 CompiledStepRef(probe)
 CompiledConditionalDependency(
     node=CompiledStepRef(configure),
-    condition=CompiledRuntimeCondition(reads=(probe,), when=predicate),
+    condition=CompiledRuntimeCondition(inputs=(probe,), when=predicate),
 )
 ```
 
-The scheduler waits for reads, evaluates the predicate, and either ignores configure
+The scheduler waits for inputs, evaluates the predicate, and either ignores configure
 or waits for it. The dependency carries its own condition; no synthetic action or
 metadata convention is needed.
 
 The same rules apply inside subgraphs. Ordinary action failures propagate through
-active conditional edges and reads, but not inactive edges. See
+active conditional edges and inputs, but not inactive edges. See
 [execution semantics](./execution.md#failure-propagation).
 
 ## Design boundary

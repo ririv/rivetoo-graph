@@ -45,7 +45,7 @@ For one Graph level, let:
 
 - V be its Step count.
 - E be its explicit edge count.
-- B count all RuntimeCondition.reads references on edges and Steps.
+- B count all RuntimeCondition.inputs references on edges and Steps.
 - A be the deduplicated local blocking-arc count, with A ≤ E + B.
 
 Blocking relations come from ordinary edges, conditional-edge sources, and runtime
@@ -58,7 +58,7 @@ The actual [model.py](../src/rivetoo_graph/model.py) path is:
 ```text
 Validate Steps and assign local integer indexes
     ↓
-_validated_blocking_arcs: traverse edges/reads and deduplicate Arc values
+_validated_blocking_arcs: traverse edges/inputs and deduplicate Arc values
     ↓
 Materialize a blocking_arcs tuple
     ↓
@@ -96,7 +96,7 @@ this costs O(M + R) time and O(M) space. M is not merely the local V above.
 Ambiguous multiply mounted references are errors.
 
 The Rust compiler validates the complete DAG, including known subgraphs,
-composite dependencies, reads, and lowered capability bindings. For N final nodes
+composite dependencies, inputs, and lowered capability bindings. For N final nodes
 and L expanded blocking relations, pure DAG validation is O(N + L) in time and
 space. A capability binding can expand to several inputs; count expanded relations,
 not just binding objects.
@@ -118,7 +118,7 @@ declaration, not from the root Python Graph.static field:
 
 - If all scopes are reachable, all nodes are active, and all runtime conditions are
   used, IDs stay unchanged. Conditions and capability bindings move directly into
-  hierarchy lowering without compact mappings or copies of condition reads.
+  hierarchy lowering without compact mappings or copies of condition inputs.
 - Otherwise, projection removes inactive nodes/scopes and unused conditions and
   remaps their references. Inactive ancestors still remove their descendants.
 
@@ -160,7 +160,7 @@ graph: every timed invocation recompiles it.
 GraphWiring.entries and exits are structural DSL boundaries, not named capability
 ports or a separately stored topology.
 
-Each calculation reads explicit ordinary/conditional edges, runtime reads, and the
+Each calculation reads explicit ordinary/conditional edges, runtime inputs, and the
 Step order used to return deterministic boundaries. Time is O(V + E + B) and
 auxiliary space O(V).
 

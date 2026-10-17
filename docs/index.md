@@ -26,7 +26,7 @@ from rivetoo_graph import Graph, GraphExecution, Step
 refer directly to Step objects. Internal `StepId` values are assigned to mounted
 nodes, while labels serve presentation only.
 
-Dependencies, condition reads, and capability bindings participate explicitly in
+Dependencies, condition inputs, and capability bindings participate explicitly in
 topology validation. Composition preserves subgraph boundaries rather than
 silently flattening declarations. Host logging, terminals, request state, and
 domain workflows are connected explicitly, not read from implicit global facilities.
@@ -59,7 +59,7 @@ performance guarantee for the latest release.
 | `GraphExecution` | A declaration and one execution scope |
 | `Step` | Optional label and condition; Python action, Python subgraph, or Rust-native subgraph |
 | `Graph.edges` | Explicit wiring |
-| `RuntimeCondition.reads` | Result dependencies required before evaluating a condition |
+| `RuntimeCondition.inputs` | Result dependencies required before evaluating a condition |
 | `StepWiring` / `GraphWiring` | Declaration-time composition |
 | `GraphCompilation` | Runtime execution structure and composite boundaries |
 
