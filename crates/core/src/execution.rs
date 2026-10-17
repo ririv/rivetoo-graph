@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
@@ -421,6 +421,10 @@ fn lower_capability_bindings(
     nodes: &mut [ExecutionNode],
     capability_bindings: impl IntoIterator<Item = CapabilityBinding>,
 ) -> Result<(), ExecutionGraphError> {
+    // 仅为能力边实际涉及的目标建立索引，每个目标的原前置只扫描一次。
+    // B 条能力边、这些目标原有 P 条前置：平均时间 O(B + P)，空间 O(B + P)。
+    // 集合只负责判重；向原 Vec 追加，因此原前置和新增能力边的顺序保持不变。
+    let mut required_sources: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
     for binding in capability_bindings {
         if binding.source.index() >= nodes.len() {
             return Err(ExecutionGraphError::UnknownCapabilitySource(binding.source));
@@ -428,10 +432,27 @@ fn lower_capability_bindings(
         let Some(target) = nodes.get_mut(binding.target.index()) else {
             return Err(ExecutionGraphError::UnknownCapabilityTarget(binding.target));
         };
-        if !target
-            .prerequisites
-            .contains(&Prerequisite::Required(binding.source))
-        {
+        // 零个或一个前置的判重本来就是 O(1)，无需为稀疏目标分配集合。
+        // 前置只追加；一旦进入索引路径，后续不会退回此分支。
+        if target.prerequisites.len() <= 1 {
+            let prerequisite = Prerequisite::Required(binding.source);
+            if target.prerequisites.first() != Some(&prerequisite) {
+                target.prerequisites.push(prerequisite);
+            }
+            continue;
+        }
+        let sources = required_sources.entry(binding.target).or_insert_with(|| {
+            target
+                .prerequisites
+                .iter()
+                .filter_map(|prerequisite| match prerequisite {
+                    Prerequisite::Required(source) => Some(*source),
+                    // 条件边不能替代能力绑定要求的无条件依赖。
+                    Prerequisite::Conditional { .. } => None,
+                })
+                .collect()
+        });
+        if sources.insert(binding.source) {
             target
                 .prerequisites
                 .push(Prerequisite::Required(binding.source));
@@ -612,5 +633,45 @@ mod tests {
             [Prerequisite::Required(node(0))]
         );
         assert_eq!(graph.dependents(node(0)), Some([node(1)].as_slice()));
+    }
+
+    #[test]
+    fn capability_deduplication_preserves_order_and_conditional_dependencies() {
+        let conditional = Prerequisite::Conditional {
+            node: node(0),
+            condition: condition(0),
+        };
+        let graph = CompiledExecutionGraph::lower(
+            [
+                ExecutionNode::leaf(None, [], None),
+                ExecutionNode::leaf(None, [], None),
+                ExecutionNode::leaf(None, [], None),
+                ExecutionNode::leaf(None, [conditional, Prerequisite::Required(node(1))], None),
+                ExecutionNode::leaf(None, [], None),
+            ],
+            [RuntimeCondition::new([])],
+            [
+                CapabilityBinding::new(node(2), node(3)),
+                CapabilityBinding::new(node(1), node(3)),
+                CapabilityBinding::new(node(0), node(4)),
+                CapabilityBinding::new(node(0), node(3)),
+                CapabilityBinding::new(node(2), node(3)),
+                CapabilityBinding::new(node(0), node(4)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            graph.nodes()[3].prerequisites(),
+            [
+                conditional,
+                Prerequisite::Required(node(1)),
+                Prerequisite::Required(node(2)),
+                Prerequisite::Required(node(0))
+            ]
+        );
+        assert_eq!(
+            graph.nodes()[4].prerequisites(),
+            [Prerequisite::Required(node(0))]
+        );
     }
 }
