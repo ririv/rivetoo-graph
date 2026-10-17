@@ -106,6 +106,55 @@ traversal, hierarchical paths, Python side tables, static predicates, and PyO3
 conversion have their own costs. Runtime-generated graphs also require separate
 compilation and nested sessions.
 
+## Static projection and identity-preserving compilation
+
+In `crates/core/src/declaration.rs`, active graph discovery indexes active composites
+by their containing graph once. For G graph scopes, V declared nodes and C composites,
+time is O(G + V), auxiliary space O(G + C). The previous per-graph scan of every node
+was O(G × V) in the worst case.
+
+After validation and reachability, compilation chooses its path from the complete
+declaration, not from the root Python Graph.static field:
+
+- If all scopes are reachable, all nodes are active, and all runtime conditions are
+  used, IDs stay unchanged. Conditions and capability bindings move directly into
+  hierarchy lowering without compact mappings or copies of condition reads.
+- Otherwise, projection removes inactive nodes/scopes and unused conditions and
+  remaps their references. Inactive ancestors still remove their descendants.
+
+Both paths use the same hierarchy lowering, capability lowering, DAG validation and
+execution indexes. False static edges may be filtered without changing node IDs.
+Runtime predicates still run only during execution. The identity test costs
+O(V + E + K), with K runtime conditions, or O(V) when K = 0.
+
+## Declaration compilation measurements
+
+Measured on 2026-10-17: Apple M1 Pro, macOS 26.4, Python 3.13.5, Rust
+1.96.0-beta.5, release extension. Baseline is d387a20. Each variant ran in a
+separate process; three rounds rotated variant order, with one warmup and five timed
+samples per case per process. Values below are medians of 15 samples, in ms.
+Each sample includes the Rust collector/compiler and Python result materialization,
+but excludes graph construction, GC before the sample, and action execution.
+
+| Shape | Before | Indexed traversal only | Indexed + identity path |
+| --- | ---: | ---: | ---: |
+| 24,000 independent leaves in one graph | 113.574 | 113.529 | 111.969 |
+| 2,000 subgraphs × 12 sequential leaves | 216.738 | 174.329 | 170.860 |
+| Same hierarchy, half the subgraphs pruned | 136.495 | 114.688 | 114.300 |
+| Same hierarchy, one runtime condition per subgraph | 261.666 | 219.084 | 214.980 |
+
+Subgraph cases include another 2,000 composite nodes. The pruning case executes
+neither actions nor predicates at runtime; 12,000 leaves survive compilation.
+Most improvement comes from indexed traversal; the identity path adds roughly 2%
+for the full hierarchy. A separate 20 × 12 check remained around 1–2 ms, with changes
+of tens of microseconds; it does not establish a small-graph speedup. No memory
+usage or real recipe build speedup is claimed.
+
+Reproduce with `python benchmarks/declaration_compile.py --repeats 5` against each
+release extension. [Raw samples](../benchmarks/results/declaration_compile_2026-10-17.json)
+include the small-graph check. Reusing the same declaration does not reuse a compiled
+graph: every timed invocation recompiles it.
+
 ## GraphWiring boundaries
 
 GraphWiring.entries and exits are structural DSL boundaries, not named capability
