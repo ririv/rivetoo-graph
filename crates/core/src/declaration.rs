@@ -98,6 +98,16 @@ impl GraphDeclaration {
     pub fn compile(self) -> Result<GraphCompilation, DeclarationError> {
         validate_declaration(&self)?;
         let active_graphs = active_graphs(&self)?;
+        if active_graphs.len() == self.graphs.len() && keeps_all_identities(&self) {
+            return self.compile_without_projection();
+        }
+        self.compile_projected(&active_graphs)
+    }
+
+    fn compile_projected(
+        self,
+        active_graphs: &HashSet<GraphId>,
+    ) -> Result<GraphCompilation, DeclarationError> {
         let active_nodes = self
             .nodes
             .iter()
@@ -113,7 +123,7 @@ impl GraphDeclaration {
         let projected_conditions =
             project_conditions(&self.conditions, &used_conditions, &node_mapping)?;
         let (projected_graphs, graph_mapping) =
-            project_graphs(&self.graphs, &active_graphs, &node_mapping);
+            project_graphs(&self.graphs, active_graphs, &node_mapping);
         let projected_nodes = project_nodes(
             &self.nodes,
             &active_nodes,
@@ -133,19 +143,62 @@ impl GraphDeclaration {
             .enumerate()
             .filter_map(|(index, used)| used.then_some(ConditionId::new(index)))
             .collect::<Vec<_>>();
-        let graph = ExecutionGraphDeclaration::new(
-            projected_graphs,
-            projected_nodes,
-            projected_conditions,
-            projected_bindings,
-        )
-        .lower()
-        .map_err(DeclarationError::Lowering)?;
-        Ok(GraphCompilation {
-            graph,
+        GraphCompilation::lower(
+            ExecutionGraphDeclaration::new(
+                projected_graphs,
+                projected_nodes,
+                projected_conditions,
+                projected_bindings,
+            ),
             declaration_nodes,
             declaration_conditions,
-        })
+        )
+    }
+
+    fn compile_without_projection(self) -> Result<GraphCompilation, DeclarationError> {
+        // 全部身份保留时直接移动条件和能力边，无需生成裁剪映射或复制 reads。
+        // V 个节点、E 条前置、C 个条件：转换时间 O(V + E + C)，额外身份列表 O(V + C)。
+        let declaration_nodes = (0..self.nodes.len()).map(NodeId::new).collect();
+        let declaration_conditions = (0..self.conditions.len()).map(ConditionId::new).collect();
+        let nodes = self.nodes.into_iter().map(|node| {
+            let NodeActivation::Active {
+                prerequisites,
+                when,
+            } = node.activation
+            else {
+                unreachable!("identity-preserving compilation requires active nodes");
+            };
+            let prerequisites =
+                prerequisites
+                    .into_iter()
+                    .filter_map(|prerequisite| match prerequisite {
+                        DeclarationPrerequisite::Required(source)
+                        | DeclarationPrerequisite::StaticConditional {
+                            node: source,
+                            enabled: true,
+                        } => Some(Prerequisite::Required(source)),
+                        DeclarationPrerequisite::StaticConditional { enabled: false, .. } => None,
+                        DeclarationPrerequisite::RuntimeConditional { node, condition } => {
+                            Some(Prerequisite::Conditional { node, condition })
+                        }
+                    });
+            match node.kind {
+                DeclaredNodeKind::Leaf => DeclaredNode::leaf(node.graph, prerequisites, when),
+                DeclaredNodeKind::Composite { child_graph } => {
+                    DeclaredNode::composite(node.graph, child_graph, prerequisites, when)
+                }
+            }
+        });
+        GraphCompilation::lower(
+            ExecutionGraphDeclaration::new(
+                self.graphs,
+                nodes,
+                self.conditions,
+                self.capability_bindings,
+            ),
+            declaration_nodes,
+            declaration_conditions,
+        )
     }
 }
 
@@ -158,6 +211,19 @@ pub struct GraphCompilation {
 }
 
 impl GraphCompilation {
+    fn lower(
+        declaration: ExecutionGraphDeclaration,
+        declaration_nodes: Vec<NodeId>,
+        declaration_conditions: Vec<ConditionId>,
+    ) -> Result<Self, DeclarationError> {
+        let graph = declaration.lower().map_err(DeclarationError::Lowering)?;
+        Ok(Self {
+            graph,
+            declaration_nodes,
+            declaration_conditions,
+        })
+    }
+
     #[must_use]
     pub const fn graph(&self) -> &CompiledExecutionGraph {
         &self.graph
@@ -397,14 +463,18 @@ fn active_graphs(declaration: &GraphDeclaration) -> Result<HashSet<GraphId>, Dec
         .ok_or(DeclarationError::MissingRootGraph)?;
     let mut active = HashSet::from([GraphId::new(root)]);
     let mut queue = VecDeque::from([GraphId::new(root)]);
+    // 一次 O(V + G) 建立父图到活跃 composite 的索引，遍历时只访问所属子图。
+    // 原先每个活跃图扫描全部 V 个节点，最坏 O(G * V)。空间 O(G + C)，C 为 composite 数。
+    let mut children = vec![Vec::new(); declaration.graphs.len()];
+    for (index, node) in declaration.nodes.iter().enumerate() {
+        if let DeclaredNodeKind::Composite { child_graph } = node.kind
+            && matches!(node.activation, NodeActivation::Active { .. })
+        {
+            children[node.graph.index()].push((index, child_graph));
+        }
+    }
     while let Some(graph) = queue.pop_front() {
-        for (index, node) in declaration.nodes.iter().enumerate() {
-            if node.graph != graph || matches!(node.activation, NodeActivation::Inactive) {
-                continue;
-            }
-            let DeclaredNodeKind::Composite { child_graph } = node.kind else {
-                continue;
-            };
+        for &(index, child_graph) in &children[graph.index()] {
             match declaration.graphs[child_graph.index()] {
                 DeclaredGraph::OwnedBy(owner) if owner == NodeId::new(index) => {}
                 _ => {
@@ -422,6 +492,36 @@ fn active_graphs(declaration: &GraphDeclaration) -> Result<HashSet<GraphId>, Dec
         }
     }
     Ok(active)
+}
+
+fn keeps_all_identities(declaration: &GraphDeclaration) -> bool {
+    // O(V + E + C) 检查完整声明，不根据 Python 根图是否传 static 猜测。
+    // 未使用的原生条件仍应被删除；此时保留普通投影路径及其旧 ID 映射语义。
+    if declaration.conditions.is_empty() {
+        return declaration
+            .nodes
+            .iter()
+            .all(|node| matches!(node.activation, NodeActivation::Active { .. }));
+    }
+    let mut used = vec![false; declaration.conditions.len()];
+    for node in &declaration.nodes {
+        let NodeActivation::Active {
+            prerequisites,
+            when,
+        } = &node.activation
+        else {
+            return false;
+        };
+        if let Some(condition) = when {
+            used[condition.index()] = true;
+        }
+        for prerequisite in prerequisites {
+            if let DeclarationPrerequisite::RuntimeConditional { condition, .. } = prerequisite {
+                used[condition.index()] = true;
+            }
+        }
+    }
+    used.into_iter().all(|used| used)
 }
 
 fn compact_mapping(active: &[bool]) -> Vec<Option<usize>> {
@@ -642,6 +742,114 @@ mod tests {
     use crate::execution::{CapabilityBinding, ConditionId, RuntimeCondition};
     use crate::lowering::{DeclaredGraph, DeclaredNodeKind, GraphId};
     use topology::NodeId;
+
+    fn active_hierarchy() -> GraphDeclaration {
+        let active = |prerequisites, when| NodeActivation::Active {
+            prerequisites,
+            when,
+        };
+        GraphDeclaration::new(
+            [DeclaredGraph::Root, DeclaredGraph::OwnedBy(NodeId::new(0))],
+            [
+                DeclarationNode::new(
+                    GraphId::new(0),
+                    DeclaredNodeKind::Composite {
+                        child_graph: GraphId::new(1),
+                    },
+                    active(vec![], None),
+                ),
+                DeclarationNode::new(
+                    GraphId::new(1),
+                    DeclaredNodeKind::Leaf,
+                    active(vec![], None),
+                ),
+                DeclarationNode::new(
+                    GraphId::new(1),
+                    DeclaredNodeKind::Leaf,
+                    active(
+                        vec![
+                            DeclarationPrerequisite::RuntimeConditional {
+                                node: NodeId::new(1),
+                                condition: ConditionId::new(0),
+                            },
+                            DeclarationPrerequisite::StaticConditional {
+                                node: NodeId::new(3),
+                                enabled: false,
+                            },
+                        ],
+                        Some(ConditionId::new(0)),
+                    ),
+                ),
+                DeclarationNode::new(
+                    GraphId::new(0),
+                    DeclaredNodeKind::Leaf,
+                    active(
+                        vec![DeclarationPrerequisite::Required(NodeId::new(0))],
+                        None,
+                    ),
+                ),
+            ],
+            [RuntimeCondition::new([NodeId::new(1)])],
+            [CapabilityBinding::new(NodeId::new(1), NodeId::new(3))],
+        )
+    }
+
+    #[test]
+    fn identity_path_matches_projection_with_hierarchy_conditions_and_capabilities() {
+        let declaration = active_hierarchy();
+        assert!(super::keeps_all_identities(&declaration));
+        let active = super::active_graphs(&declaration).unwrap();
+        let projected = declaration.clone().compile_projected(&active).unwrap();
+        assert_eq!(declaration.compile().unwrap(), projected);
+    }
+
+    #[test]
+    fn unused_conditions_still_have_compact_identity_mapping() {
+        let mut declaration = active_hierarchy();
+        declaration.conditions.insert(0, RuntimeCondition::new([]));
+        let NodeActivation::Active {
+            prerequisites,
+            when,
+        } = &mut declaration.nodes[2].activation
+        else {
+            unreachable!();
+        };
+        *when = Some(ConditionId::new(1));
+        prerequisites[0] = DeclarationPrerequisite::RuntimeConditional {
+            node: NodeId::new(1),
+            condition: ConditionId::new(1),
+        };
+        assert!(!super::keeps_all_identities(&declaration));
+        let compiled = declaration.compile().unwrap();
+        assert_eq!(compiled.declaration_conditions(), [ConditionId::new(1)]);
+        assert_eq!(
+            compiled.graph().nodes()[2].when(),
+            Some(ConditionId::new(0))
+        );
+    }
+
+    #[test]
+    fn inactive_parent_removes_active_children() {
+        let mut declaration = active_hierarchy();
+        declaration.nodes[0].activation = NodeActivation::Inactive;
+        declaration.capability_bindings.clear();
+        let active = super::active_graphs(&declaration).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(
+            declaration.compile().unwrap().declaration_nodes(),
+            [NodeId::new(3)]
+        );
+    }
+
+    #[test]
+    fn empty_graph_matches_projection() {
+        let declaration = GraphDeclaration::new([DeclaredGraph::Root], [], [], []);
+        let active = super::active_graphs(&declaration).unwrap();
+        assert_eq!(
+            declaration.clone().compile().unwrap(),
+            declaration.compile_projected(&active).unwrap()
+        );
+    }
 
     #[test]
     fn compilation_removes_inactive_nodes_and_their_edges() {
