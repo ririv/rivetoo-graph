@@ -633,21 +633,22 @@ def _materialize_native_compilation(
     source_graphs = tuple(native.source_graphs())
 
     refs_by_declaration: dict[int, CompiledNodeRef] = {}
-    for declaration in active_declarations:
-        step_id = step_ids[declaration]
+    for compiled_index, declaration in enumerate(active_declarations):
+        step_id = step_ids[compiled_index]
         refs_by_declaration[declaration] = (
             CompiledCompositeRef(step_id)
-            if child_graphs[declaration] is not None
+            if child_graphs[compiled_index] is not None
             else CompiledStepRef(step_id)
         )
 
     graph_step_ids = tuple(
         MappingProxyType(
             {
-                cast("Step", source_steps[declaration]): step_ids[declaration]
+                cast("Step", source_steps[compiled_index]): step_ids[compiled_index]
                 for declaration in local_nodes
                 if declaration in declaration_to_compiled
-                and source_steps[declaration] is not None
+                for compiled_index in (declaration_to_compiled[declaration],)
+                if source_steps[compiled_index] is not None
             }
         )
         for local_nodes in graph_local_nodes
@@ -657,7 +658,8 @@ def _materialize_native_compilation(
         scopes: list[GraphScope] = []
         current = graph_index
         while (owner := graph_owners[current]) is not None:
-            parent_graph = node_graphs[owner]
+            owner_index = declaration_to_compiled[owner]
+            parent_graph = node_graphs[owner_index]
             scopes.append(GraphScope(step_ids=graph_step_ids[parent_graph]))
             current = parent_graph
         return (*scopes, *external_ancestor_graph_scopes)
@@ -666,20 +668,19 @@ def _materialize_native_compilation(
         result: list[StepId] = []
         current = graph_index
         while (owner := graph_owners[current]) is not None:
-            result.append(step_ids[owner])
-            current = node_graphs[owner]
+            owner_index = declaration_to_compiled[owner]
+            result.append(step_ids[owner_index])
+            current = node_graphs[owner_index]
         return tuple(result)
 
     predicates = native.predicates()
     condition_reads = native.condition_reads()
     compiled_conditions = tuple(
         CompiledRuntimeCondition(
-            when=cast("ConditionalEdgePredicate", predicates[declaration]),
-            reads=tuple(
-                refs_by_declaration[read] for read in condition_reads[declaration]
-            ),
+            when=cast("ConditionalEdgePredicate", predicate),
+            reads=tuple(refs_by_declaration[read] for read in reads),
         )
-        for declaration in native.declaration_conditions()
+        for predicate, reads in zip(predicates, condition_reads, strict=True)
     )
     native_after = native.graph.all_prerequisites()
     native_when = native.graph.when_conditions()
@@ -698,8 +699,8 @@ def _materialize_native_compilation(
     composites: list[CompiledComposite] = []
     ordered_nodes: list[CompiledNode] = []
     for compiled_index, declaration in enumerate(active_declarations):
-        graph_index = node_graphs[declaration]
-        label_path = (*graph_label_paths[graph_index], labels[declaration])
+        graph_index = node_graphs[compiled_index]
+        label_path = (*graph_label_paths[graph_index], labels[compiled_index])
         context = CompiledStepContext(
             label_path=label_path,
             graph_label_path=graph_label_paths[graph_index],
@@ -717,9 +718,9 @@ def _materialize_native_compilation(
         when_index = native_when[compiled_index]
         when = None if when_index is None else compiled_conditions[when_index]
         ref = refs_by_declaration[declaration]
-        child_graph = child_graphs[declaration]
+        child_graph = child_graphs[compiled_index]
         if child_graph is None:
-            action = actions[declaration]
+            action = actions[compiled_index]
             compiled_step: CompiledLeaf
             if action is None:
                 compiled_step = CompiledNativeStep(

@@ -88,6 +88,40 @@ def test_compile_graph_flattens_nested_graph_and_preserves_structure() -> None:
     }
 
 
+def test_pruned_native_side_tables_keep_only_compiled_nodes() -> None:
+    from rivetoo_graph._native import compile_declaration
+
+    removed = Step(
+        lambda: None,
+        label="removed",
+        when=runtime_condition(reads=(), when=lambda _ctx: False),
+    )
+    kept = Step(lambda: None, label="kept")
+    checked = Step(
+        lambda: None,
+        label="checked",
+        when=runtime_condition(reads=(kept,), when=lambda _ctx: True),
+    )
+    graph = Graph(
+        steps=(removed, kept, checked),
+        static=StaticConditions(
+            evaluator=lambda _condition: False,
+            conditions={removed: _condition("disabled")},
+        ),
+    )
+    native = compile_declaration(graph, "test")
+    assert native.declaration_nodes() == [1, 2]
+    assert native.node_step_ids() == [[1], [2]]
+    assert native.node_labels() == ["kept", "checked"]
+    assert native.source_steps() == [kept, checked]
+    assert len(native.actions()) == 2
+    assert native.condition_reads() == [[1]]
+    compiled = compile_graph(graph, root_label="test")
+    assert [step.id for step in compiled.steps] == [StepId((1,)), StepId((2,))]
+    assert compiled.steps[1].when is not None
+    assert compiled.steps[1].when.reads == (compiled.steps[0].ref,)
+
+
 def test_graph_compilation_rejects_unknown_prerequisite() -> None:
     source_graph = Graph.from_wiring(
         label="root",

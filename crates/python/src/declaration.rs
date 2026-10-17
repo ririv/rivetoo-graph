@@ -610,6 +610,16 @@ pub(crate) struct NativeDeclarationCompilation {
     native_actions: NativeActionBindings,
 }
 
+impl NativeDeclarationCompilation {
+    // 只导出存活节点，顺序与编译索引一致；保留声明 ID 用于原作用域引用。
+    // 每个节点侧表 O(V_active)，不再为裁剪节点复制字符串、路径或 Python 引用。
+    fn active_nodes(&self) -> impl Iterator<Item = &NodeRecord> {
+        self.declaration_nodes
+            .iter()
+            .map(|&index| &self.nodes[index])
+    }
+}
+
 #[pymethods]
 impl NativeDeclarationCompilation {
     #[getter]
@@ -626,31 +636,31 @@ impl NativeDeclarationCompilation {
     }
 
     fn node_step_ids(&self) -> Vec<Vec<usize>> {
-        self.nodes.iter().map(|node| node.step_id.clone()).collect()
+        self.active_nodes()
+            .map(|node| node.step_id.clone())
+            .collect()
     }
 
     fn node_labels(&self) -> Vec<String> {
-        self.nodes.iter().map(|node| node.label.clone()).collect()
+        self.active_nodes().map(|node| node.label.clone()).collect()
     }
 
     fn node_graphs(&self) -> Vec<usize> {
-        self.nodes.iter().map(|node| node.graph).collect()
+        self.active_nodes().map(|node| node.graph).collect()
     }
 
     fn node_child_graphs(&self) -> Vec<Option<usize>> {
-        self.nodes.iter().map(|node| node.child_graph).collect()
+        self.active_nodes().map(|node| node.child_graph).collect()
     }
 
     fn source_steps(&self, py: Python<'_>) -> Vec<Option<Py<PyAny>>> {
-        self.nodes
-            .iter()
+        self.active_nodes()
             .map(|node| node.source_step.as_ref().map(|step| step.clone_ref(py)))
             .collect()
     }
 
     fn actions(&self, py: Python<'_>) -> Vec<Option<Py<PyAny>>> {
-        self.nodes
-            .iter()
+        self.active_nodes()
             .map(|node| match &node.action {
                 NodeAction::Python(action) => Some(action.clone_ref(py)),
                 NodeAction::Native(_) => None,
@@ -695,16 +705,16 @@ impl NativeDeclarationCompilation {
     }
 
     fn predicates(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
-        self.conditions
+        self.declaration_conditions
             .iter()
-            .map(|condition| condition.predicate.clone_ref(py))
+            .map(|&index| self.conditions[index].predicate.clone_ref(py))
             .collect()
     }
 
     fn condition_reads(&self) -> Vec<Vec<usize>> {
-        self.conditions
+        self.declaration_conditions
             .iter()
-            .map(|condition| condition.reads.clone())
+            .map(|&index| self.conditions[index].reads.clone())
             .collect()
     }
 }
