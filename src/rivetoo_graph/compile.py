@@ -654,24 +654,23 @@ def _materialize_native_compilation(
         for local_nodes in graph_local_nodes
     )
 
-    def ancestor_graph_scopes(graph_index: int) -> tuple[GraphScope, ...]:
+    # 同一图的节点共享不可变祖先上下文。深度 D：从 O(V_active * D)
+    # 收敛为 O(G_active * D + V_active)，祖先对象也只按图创建。
+    scopes_by_graph: dict[int, tuple[GraphScope, ...]] = {}
+    ancestors_by_graph: dict[int, tuple[StepId, ...]] = {}
+
+    def resolve_ancestors(graph_index: int) -> None:
         scopes: list[GraphScope] = []
+        ancestors: list[StepId] = []
         current = graph_index
         while (owner := graph_owners[current]) is not None:
             owner_index = declaration_to_compiled[owner]
             parent_graph = node_graphs[owner_index]
             scopes.append(GraphScope(step_ids=graph_step_ids[parent_graph]))
+            ancestors.append(step_ids[owner_index])
             current = parent_graph
-        return (*scopes, *external_ancestor_graph_scopes)
-
-    def ancestor_composite_ids(graph_index: int) -> tuple[StepId, ...]:
-        result: list[StepId] = []
-        current = graph_index
-        while (owner := graph_owners[current]) is not None:
-            owner_index = declaration_to_compiled[owner]
-            result.append(step_ids[owner_index])
-            current = node_graphs[owner_index]
-        return tuple(result)
+        scopes_by_graph[graph_index] = (*scopes, *external_ancestor_graph_scopes)
+        ancestors_by_graph[graph_index] = tuple(ancestors)
 
     predicates = native.predicates()
     condition_reads = native.condition_reads()
@@ -700,13 +699,15 @@ def _materialize_native_compilation(
     ordered_nodes: list[CompiledNode] = []
     for compiled_index, declaration in enumerate(active_declarations):
         graph_index = node_graphs[compiled_index]
+        if graph_index not in scopes_by_graph:
+            resolve_ancestors(graph_index)
         label_path = (*graph_label_paths[graph_index], labels[compiled_index])
         context = CompiledStepContext(
             label_path=label_path,
             graph_label_path=graph_label_paths[graph_index],
             graph_step_ids=graph_step_ids[graph_index],
-            ancestor_graph_scopes=ancestor_graph_scopes(graph_index),
-            ancestor_composite_ids=ancestor_composite_ids(graph_index),
+            ancestor_graph_scopes=scopes_by_graph[graph_index],
+            ancestor_composite_ids=ancestors_by_graph[graph_index],
         )
         owner_declaration = graph_owners[graph_index]
         owner = (

@@ -86,6 +86,14 @@ def test_compile_graph_flattens_nested_graph_and_preserves_structure() -> None:
         stage_graph.steps[0]: StepId((1, 0)),
         stage_graph.steps[1]: StepId((1, 1)),
     }
+    assert (
+        compilation.steps[1].context.ancestor_graph_scopes
+        is compilation.steps[2].context.ancestor_graph_scopes
+    )
+    assert (
+        compilation.steps[1].context.ancestor_composite_ids
+        is compilation.steps[2].context.ancestor_composite_ids
+    )
 
 
 def test_pruned_native_side_tables_keep_only_compiled_nodes() -> None:
