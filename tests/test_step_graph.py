@@ -178,7 +178,7 @@ def test_runtime_condition_reads_define_wiring_boundaries() -> None:
     conditional = Step(
         label="conditional",
         action=LeafAction(fn=_noop),
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: bool(result.unwrap()),
         ),
@@ -284,12 +284,12 @@ def test_graph_step_wraps_graph_with_mount_parameters() -> None:
     condition = runtime_condition(when=lambda: True)
 
     default_mount = child.step()
-    configured_mount = child.step(label="build", when=condition)
+    configured_mount = child.step(label="build", condition=condition)
 
     assert default_mount.label == "child"
     assert default_mount.action is child
     assert configured_mount.label == "build"
-    assert configured_mount.when is condition
+    assert configured_mount.condition is condition
     assert configured_mount.action is child
 
 

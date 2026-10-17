@@ -184,7 +184,7 @@ def append_execution_step(
     lines.append(
         f"{prefix}{branch}{base}"
         f"{render_static_suffix(graph, step)}"
-        f"{render_execution_when_suffix(step, step_id=step_id, condition_values=snapshot.runtime_condition_values)}"
+        f"{render_execution_condition_suffix(step, step_id=step_id, condition_values=snapshot.runtime_condition_values)}"
         f" [{status.value}]"
         f"{render_execution_result_suffix(step_id, snapshot.results)}"
         f"{render_graph_after_suffix(graph, step, step_ids=graph_step_ids)}"
@@ -234,7 +234,7 @@ def resolve_execution_status(
     return ExecutionRenderStatus.NOT_REACHED
 
 
-def render_execution_when_suffix(
+def render_execution_condition_suffix(
     step: Step,
     *,
     step_id: StepId,
@@ -242,13 +242,12 @@ def render_execution_when_suffix(
 ) -> str:
     """渲染 runtime 已记录的条件值，不在渲染阶段重新执行 predicate。"""
 
-    when = step.when
-    if when is None:
+    if step.condition is None:
         return ""
     value = condition_values.get(step_id)
     if value is None:
-        return " [when=pending]"
-    return f" [when={str(value).lower()}]"
+        return " [condition=pending]"
+    return f" [condition={str(value).lower()}]"
 
 
 def active_execution_step_ids(

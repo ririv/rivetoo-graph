@@ -806,7 +806,7 @@ def test_runtime_step_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
     second = Step(label="second", action=lambda: None)
     target = Step(
         label="target",
-        when=runtime_condition(inputs=(probe,), when=_condition),
+        condition=runtime_condition(inputs=(probe,), when=_condition),
         action=lambda: None,
     )
     graph = Graph.from_wiring(
@@ -885,7 +885,7 @@ def test_execution_render_does_not_reevaluate_runtime_condition() -> None:
         wiring=(
             Step(
                 label="target",
-                when=runtime_condition(when=_condition),
+                condition=runtime_condition(when=_condition),
                 action=lambda: None,
             ).wire(),
         ),
@@ -896,7 +896,7 @@ def test_execution_render_does_not_reevaluate_runtime_condition() -> None:
     rendered = render_graph_execution(graph, state, root_label="root")
 
     assert evaluations == 1
-    assert "target [when=true] [executed]" in rendered
+    assert "target [condition=true] [executed]" in rendered
 
 
 @pytest.mark.parametrize("mode", ["dynamic", "compiled"])
@@ -1169,7 +1169,7 @@ def test_parent_waits_for_all_steps_in_child_with_disabled_step(
     source = Step(label="source", action=_source)
     disabled = Step(
         label="disabled",
-        when=runtime_condition(when=lambda: False),
+        condition=runtime_condition(when=lambda: False),
         action=lambda: None,
     )
     target = Step(label="target", action=lambda: None)
@@ -1530,7 +1530,7 @@ def test_step_when_false_skips_step_and_allows_downstream_continue(
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: False))
     optional = Step(
         label="optional",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: bool(result.unwrap()),
         ),
@@ -1569,7 +1569,7 @@ def test_dynamic_step_when_false_skips_graph_step() -> None:
     )
     stage = Step(
         label="stage",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: bool(result.unwrap()),
         ),
@@ -1605,7 +1605,7 @@ def test_compiled_runtime_when_false_matches_dynamic_for_graph_step() -> None:
     configure = Step(label="configure", action=LeafAction(fn=lambda _ctx: "cfg"))
     stage = Step(
         label="stage",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: bool(result.unwrap()),
         ),
@@ -1644,7 +1644,7 @@ def test_compiled_runtime_when_true_activates_composite() -> None:
     )
     stage = Step(
         label="stage",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: bool(result.unwrap()),
         ),
@@ -1680,7 +1680,7 @@ def test_graph_execution_run_logs_step_skip_by_condition(
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: True))
     build = Step(
         label="build",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: not bool(result.unwrap()),
         ),
@@ -1708,7 +1708,7 @@ def test_graph_execution_run_writes_execution_render_to_run_log_dir(
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: True))
     build = Step(
         label="build",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: not bool(result.unwrap()),
         ),
@@ -1731,4 +1731,4 @@ def test_graph_execution_run_writes_execution_render_to_run_log_dir(
     text = (tmp_path / "graph-execution.root.dynamic.tree").read_text(encoding="utf-8")
     assert "execution: root (mode=dynamic)" in text
     assert "probe [executed] [result=true]" in text
-    assert "build [when=false] [skipped] [after: probe]" in text
+    assert "build [condition=false] [skipped] [after: probe]" in text

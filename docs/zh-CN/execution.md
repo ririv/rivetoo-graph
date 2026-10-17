@@ -50,7 +50,7 @@ step id、label path 与父结果作用域，再进入同一个编译执行流�
 - 两种模式共同：
   - Rust 编译器裁剪 `StaticCondition`
   - 运行时条件边编译为 `CompiledConditionalDependency`
-  - step 级 runtime `when` 编译为 `CompiledRuntimeCondition`
+  - step 级 runtime `condition` 编译为 `CompiledRuntimeCondition`
   - 条件位于子图内部时，叶子仍然扁平化
   - 条件为假时节点进入 skipped 终态；条件依赖为假时只移除该依赖
   - 每个编译条件实例在当前 session 中最多求值一次；多个实例可以复用同一个 predicate

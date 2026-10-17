@@ -216,7 +216,7 @@ impl<'py> Collector<'py> {
             let activation = if active {
                 NodeActivation::Active {
                     prerequisites: Vec::new(),
-                    when: None,
+                    condition: None,
                 }
             } else {
                 NodeActivation::Inactive
@@ -323,7 +323,7 @@ impl<'py> Collector<'py> {
             let activation = if parent_active {
                 NodeActivation::Active {
                     prerequisites: Vec::new(),
-                    when: None,
+                    condition: None,
                 }
             } else {
                 NodeActivation::Inactive
@@ -369,11 +369,11 @@ impl<'py> Collector<'py> {
                 continue;
             };
             let step = source_step.bind(self.py).clone();
-            let when = step.getattr("when")?;
-            if when.is_instance(&self.types.runtime_condition)? {
-                let condition = self.register_runtime_condition(&when, graph_index)?;
-                self.set_node_when(node_index, condition);
-            } else if !when.is_none() {
+            let condition = step.getattr("condition")?;
+            if condition.is_instance(&self.types.runtime_condition)? {
+                let condition = self.register_runtime_condition(&condition, graph_index)?;
+                self.set_node_condition(node_index, condition);
+            } else if !condition.is_none() {
                 return Err(PyValueError::new_err("unsupported graph step condition"));
             }
         }
@@ -530,17 +530,17 @@ impl<'py> Collector<'py> {
             DeclarationNode::new(GraphId::new(self.nodes[node].graph), kind, activation);
     }
 
-    fn set_node_when(&mut self, node: usize, condition: ConditionId) {
+    fn set_node_condition(&mut self, node: usize, condition: ConditionId) {
         let NodeActivation::Active {
             prerequisites,
-            when: _,
+            condition: _,
         } = self.node_activation(node).clone()
         else {
             return;
         };
         let activation = NodeActivation::Active {
             prerequisites,
-            when: Some(condition),
+            condition: Some(condition),
         };
         self.activations[node] = activation.clone();
         self.declaration_nodes[node] = DeclarationNode::new(
@@ -553,7 +553,7 @@ impl<'py> Collector<'py> {
     fn push_node_prerequisite(&mut self, node: usize, prerequisite: DeclarationPrerequisite) {
         let NodeActivation::Active {
             mut prerequisites,
-            when,
+            condition,
         } = self.node_activation(node).clone()
         else {
             return;
@@ -561,7 +561,7 @@ impl<'py> Collector<'py> {
         prerequisites.push(prerequisite);
         let activation = NodeActivation::Active {
             prerequisites,
-            when,
+            condition,
         };
         self.activations[node] = activation.clone();
         self.declaration_nodes[node] = DeclarationNode::new(

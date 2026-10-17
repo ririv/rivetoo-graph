@@ -104,7 +104,7 @@ pub struct ExecutionNode {
     kind: ExecutionNodeKind,
     owner: Option<NodeId>,
     prerequisites: Vec<Prerequisite>,
-    when: Option<ConditionId>,
+    condition: Option<ConditionId>,
 }
 
 impl ExecutionNode {
@@ -112,13 +112,13 @@ impl ExecutionNode {
     pub fn leaf(
         owner: Option<NodeId>,
         prerequisites: impl IntoIterator<Item = Prerequisite>,
-        when: Option<ConditionId>,
+        condition: Option<ConditionId>,
     ) -> Self {
         Self {
             kind: ExecutionNodeKind::Leaf,
             owner,
             prerequisites: prerequisites.into_iter().collect(),
-            when,
+            condition,
         }
     }
 
@@ -126,13 +126,13 @@ impl ExecutionNode {
     pub fn composite(
         owner: Option<NodeId>,
         prerequisites: impl IntoIterator<Item = Prerequisite>,
-        when: Option<ConditionId>,
+        condition: Option<ConditionId>,
     ) -> Self {
         Self {
             kind: ExecutionNodeKind::Composite,
             owner,
             prerequisites: prerequisites.into_iter().collect(),
-            when,
+            condition,
         }
     }
 
@@ -152,8 +152,8 @@ impl ExecutionNode {
     }
 
     #[must_use]
-    pub const fn when(&self) -> Option<ConditionId> {
-        self.when
+    pub const fn condition(&self) -> Option<ConditionId> {
+        self.condition
     }
 }
 
@@ -356,7 +356,7 @@ impl CompiledExecutionGraph {
                     }
                 }
             }
-            if let Some(condition_id) = node.when {
+            if let Some(condition_id) = node.condition {
                 let condition = require_condition(node_id, condition_id, &conditions)?;
                 for read in condition.reads() {
                     add_dependency(

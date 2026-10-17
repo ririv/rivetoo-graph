@@ -60,7 +60,7 @@ A Step contains:
 ```python
 label: str | None
 action: LeafAction | Graph | NativeGraph
-when: RuntimeCondition | None
+condition: RuntimeCondition | None
 ```
 
 It has no public `id` or `after` field.
@@ -158,7 +158,7 @@ Using an existing Graph as an operand wraps it in a Step and preserves its bound
 
 ```python
 pipeline = (prepare >> child_graph >> install).graph()
-child_step = child_graph.step(label="build", when=condition)
+child_step = child_graph.step(label="build", condition=condition)
 ```
 
 Explicit `Graph.step()` and automatic DSL wrapping use the same semantics.
@@ -188,7 +188,7 @@ selected_graph = select_one(
 )()
 ```
 
-Unlike selection before construction, `Step.when` controls a node's participation
+Unlike selection before construction, `Step.condition` controls a node's participation
 inside an already declared graph.
 
 ## LeafAction
@@ -242,7 +242,7 @@ already running graph.
 
 ## Conditions
 
-`Step.when` and ConditionalEdge accept runtime conditions. StaticConditions binds
+`Step.condition` and ConditionalEdge accept runtime conditions. StaticConditions binds
 node and edge rules to an evaluator for compilation. See [static rules](./conditional_steps.md).
 RuntimeCondition is evaluated during execution.
 

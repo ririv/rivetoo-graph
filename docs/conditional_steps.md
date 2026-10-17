@@ -4,7 +4,7 @@ English | [简体中文](./zh-CN/conditional_steps.md)
 
 ## Purpose
 
-Conditional edges control whether a dependency applies. `Step.when` controls
+Conditional edges control whether a dependency applies. `Step.condition` controls
 whether the Step itself participates. It works for Python leaves, Python Graph
 composites, and NativeGraph composites.
 
@@ -13,22 +13,36 @@ composites, and NativeGraph composites.
 Defined in [model.py](../src/rivetoo_graph/model.py):
 
 ```python
-Step(action=..., label=..., when=...)
+Step(action=..., label=..., condition=...)
 ```
 
-Label is optional presentation. `when` accepts
+Label is optional presentation. `condition` accepts
 `RuntimeCondition | None`, not bool.
 Wiring belongs to `Step.wire(after=...)` and Graph.edges, not to Step itself.
+
+The outer `condition` binds a condition object, just like a conditional edge.
+Inside `runtime_condition`, `when` is the function deciding whether it holds:
+
+```python
+probe = Step(lambda: 42)
+condition = runtime_condition(
+    inputs=(probe,),
+    when=lambda result: result.unwrap() == 42,
+)
+build = Step(build_source, condition=condition)
+```
+
+`child_graph.step(condition=condition)` uses the same spelling for a subgraph mount.
 
 ## Semantics
 
 ### No condition
 
-`when=None` leaves the Step enabled.
+`condition=None` leaves the Step enabled.
 
 ### Static condition
 
-Static rules belong to StaticConditions, not Step.when:
+Static rules belong to StaticConditions, not Step.condition:
 
 ```python
 static = StaticConditions(evaluator=evaluate_target_condition)
@@ -63,7 +77,7 @@ graph = Graph(
 Rules reference declared nodes or edges. One mapping covers both, without a second
 Step or Graph type. Evaluation happens only during compilation; declarations can be
 compiled again. Evaluators should be pure and must not mutate shared state.
-A static node rule may coexist with runtime when: static pruning happens first.
+A static node rule may coexist with runtime condition: static pruning happens first.
 
 ### Runtime condition
 
@@ -106,13 +120,13 @@ requested in a batch and returns results through advance.
 - A composite remains a real subgraph boundary, not a no-op leaf.
 
 In [compile.py](../src/rivetoo_graph/compile.py), conditional edges lower to
-CompiledConditionalDependency, while runtime Step.when lowers to
+CompiledConditionalDependency, while runtime Step.condition lowers to
 CompiledRuntimeCondition on the node itself. Step conditions are not rewritten
 as conditional edges.
 
 Declared subgraph leaves join the execution structure. Their boundary becomes
 CompiledComposite, retaining prerequisites, successors, observation, and runtime
-when. Activation releases direct children; false skips the subtree. Empty composites
+condition. Activation releases direct children; false skips the subtree. Empty composites
 still retain their dependency boundary.
 
 ## Inputs versus action prerequisites
@@ -128,7 +142,7 @@ prepare_b = Step(prepare_b_source, label="prepare_b")
 heavy_build = Step(
     build_source,
     label="heavy_build",
-    when=runtime_condition(
+    condition=runtime_condition(
         inputs=(probe,),
         when=lambda result: bool(result.unwrap()),
     ),

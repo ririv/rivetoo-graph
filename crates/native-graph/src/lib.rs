@@ -114,7 +114,7 @@ impl NativeGraph {
                     DeclaredNodeKind::Leaf,
                     NodeActivation::Active {
                         prerequisites,
-                        when: None,
+                        condition: None,
                     },
                 )
             }),

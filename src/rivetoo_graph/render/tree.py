@@ -14,12 +14,12 @@ from .formatting import (
     ensure_compilation,
     render_after_suffix,
     render_compiled_step_label,
+    render_condition_suffix,
     render_graph_after_suffix,
     render_graph_capability_suffix,
     render_static_suffix,
     render_step_label,
     render_step_path,
-    render_when_suffix,
 )
 
 
@@ -77,7 +77,7 @@ def render_graph_compilation(
     for step in compilation.steps:
         label = render_compiled_step_label(step, step.context.label_path)
         lines.append(
-            f"- {label}{render_when_suffix(step)}"
+            f"- {label}{render_condition_suffix(step)}"
             f"{render_after_suffix(step, step_labels=node_labels)}"
         )
     if compilation.composites:
@@ -93,7 +93,7 @@ def render_graph_compilation(
             lines.append(
                 f"- {render_step_path(composite.label_path)}"
                 f" [children: {children or '-'}]"
-                f"{render_when_suffix(composite)}"
+                f"{render_condition_suffix(composite)}"
                 f"{render_after_suffix(composite, step_labels=node_labels)}"
             )
     return "\n".join(lines)
@@ -115,7 +115,7 @@ def append_tree_step(
     step_label = resolve_step_label(step, step_id)
     if isinstance(action, Graph):
         lines.append(
-            f"{prefix}{branch}{step_label} [graph]{render_static_suffix(graph, step)}{render_when_suffix(step)}"
+            f"{prefix}{branch}{step_label} [graph]{render_static_suffix(graph, step)}{render_condition_suffix(step)}"
             f"{render_graph_after_suffix(graph, step, step_ids=step_ids)}"
             f"{render_graph_capability_suffix(graph, step)}"
         )
@@ -134,6 +134,6 @@ def append_tree_step(
     lines.append(
         f"{prefix}{branch}{render_step_label(step, step_id=step_id)}"
         f"{render_static_suffix(graph, step)}"
-        f"{render_when_suffix(step)}"
+        f"{render_condition_suffix(step)}"
         f"{render_graph_after_suffix(graph, step, step_ids=step_ids)}"
     )

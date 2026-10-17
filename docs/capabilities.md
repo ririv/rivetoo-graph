@@ -299,6 +299,6 @@ To publish completion of an entire native graph, mount it in a Python Step and
 use that Step as an output. A dynamically returned graph cannot expose unknown
 internal ports before it exists.
 
-Provider components and their direct output Steps cannot use runtime `when` to
+Provider components and their direct output Steps cannot use runtime `condition` to
 decide whether they exist. Provider selection is fixed before compilation; runtime
 skipping is not a mechanism for changing candidates.

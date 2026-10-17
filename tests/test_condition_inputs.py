@@ -61,7 +61,9 @@ def test_inputs_distinguish_skipped_from_none_in_declared_order(
 ) -> None:
     seen: list[tuple[Option[object], ...]] = []
     calls: list[str] = []
-    skipped = Step(lambda: "unreachable", when=runtime_condition(when=lambda: False))
+    skipped = Step(
+        lambda: "unreachable", condition=runtime_condition(when=lambda: False)
+    )
     returned_none = Step(lambda: None)
     returned_false = Step(lambda: False)
 
@@ -77,7 +79,9 @@ def test_inputs_distinguish_skipped_from_none_in_declared_order(
         inputs=(skipped, returned_none, returned_false), when=condition
     )
     prerequisite = Step(lambda: calls.append("prerequisite"))
-    consumer = Step(lambda: calls.append("consumer"), when=None if edge else predicate)
+    consumer = Step(
+        lambda: calls.append("consumer"), condition=None if edge else predicate
+    )
     graph = Graph.from_wiring(
         (
             consumer.wire(
@@ -114,7 +118,7 @@ def test_repeated_nested_graph_mounts_supply_their_own_results(
         return True
 
     consumer = Step(
-        lambda: None, when=runtime_condition(inputs=(probe,), when=condition)
+        lambda: None, condition=runtime_condition(inputs=(probe,), when=condition)
     )
     child = Graph(steps=(consumer, probe))
     nested = Graph(steps=(Step(child),))
@@ -133,7 +137,7 @@ def test_repeated_input_preserves_arguments_without_rewrapping() -> None:
 
     consumer = Step(
         lambda: None,
-        when=runtime_condition(inputs=(probe, probe), when=condition),
+        condition=runtime_condition(inputs=(probe, probe), when=condition),
     )
     execution = GraphExecution(Graph(steps=(consumer, probe)))
     execution.run()

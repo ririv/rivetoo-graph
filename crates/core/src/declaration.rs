@@ -16,7 +16,7 @@ use topology::NodeId;
 pub enum NodeActivation {
     Active {
         prerequisites: Vec<DeclarationPrerequisite>,
-        when: Option<ConditionId>,
+        condition: Option<ConditionId>,
     },
     Inactive,
 }
@@ -163,7 +163,7 @@ impl GraphDeclaration {
         let nodes = self.nodes.into_iter().map(|node| {
             let NodeActivation::Active {
                 prerequisites,
-                when,
+                condition,
             } = node.activation
             else {
                 unreachable!("identity-preserving compilation requires active nodes");
@@ -183,9 +183,9 @@ impl GraphDeclaration {
                         }
                     });
             match node.kind {
-                DeclaredNodeKind::Leaf => DeclaredNode::leaf(node.graph, prerequisites, when),
+                DeclaredNodeKind::Leaf => DeclaredNode::leaf(node.graph, prerequisites, condition),
                 DeclaredNodeKind::Composite { child_graph } => {
-                    DeclaredNode::composite(node.graph, child_graph, prerequisites, when)
+                    DeclaredNode::composite(node.graph, child_graph, prerequisites, condition)
                 }
             }
         });
@@ -405,7 +405,7 @@ fn validate_declaration(declaration: &GraphDeclaration) -> Result<(), Declaratio
         }
         if let NodeActivation::Active {
             prerequisites,
-            when,
+            condition,
         } = &node.activation
         {
             for prerequisite in prerequisites {
@@ -424,7 +424,7 @@ fn validate_declaration(declaration: &GraphDeclaration) -> Result<(), Declaratio
                     });
                 }
             }
-            if let Some(condition) = when
+            if let Some(condition) = condition
                 && condition.index() >= declaration.conditions.len()
             {
                 return Err(DeclarationError::UnknownCondition {
@@ -507,12 +507,12 @@ fn keeps_all_identities(declaration: &GraphDeclaration) -> bool {
     for node in &declaration.nodes {
         let NodeActivation::Active {
             prerequisites,
-            when,
+            condition,
         } = &node.activation
         else {
             return false;
         };
-        if let Some(condition) = when {
+        if let Some(condition) = condition {
             used[condition.index()] = true;
         }
         for prerequisite in prerequisites {
@@ -551,7 +551,7 @@ fn used_conditions(
         }
         let NodeActivation::Active {
             prerequisites,
-            when,
+            condition,
         } = &node.activation
         else {
             continue;
@@ -564,7 +564,7 @@ fn used_conditions(
                 used[condition.index()] = true;
             }
         }
-        if let Some(condition) = when {
+        if let Some(condition) = condition {
             used[condition.index()] = true;
         }
     }
@@ -657,7 +657,7 @@ fn project_nodes(
         .map(|(_, node)| {
             let NodeActivation::Active {
                 prerequisites,
-                when,
+                condition,
             } = &node.activation
             else {
                 unreachable!("active node must have active declaration state")
@@ -692,7 +692,7 @@ fn project_nodes(
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let when = when.map(|condition| {
+            let condition = condition.map(|condition| {
                 condition_mapping[condition.index()]
                     .map(ConditionId::new)
                     .ok_or(DeclarationError::UnknownCondition {
@@ -700,13 +700,16 @@ fn project_nodes(
                         condition,
                     })
             });
-            let when = when.transpose()?;
+            let condition = condition.transpose()?;
             let graph = graph_mapping[&node.graph];
             Ok(match node.kind {
-                DeclaredNodeKind::Leaf => DeclaredNode::leaf(graph, prerequisites, when),
-                DeclaredNodeKind::Composite { child_graph } => {
-                    DeclaredNode::composite(graph, graph_mapping[&child_graph], prerequisites, when)
-                }
+                DeclaredNodeKind::Leaf => DeclaredNode::leaf(graph, prerequisites, condition),
+                DeclaredNodeKind::Composite { child_graph } => DeclaredNode::composite(
+                    graph,
+                    graph_mapping[&child_graph],
+                    prerequisites,
+                    condition,
+                ),
             })
         })
         .collect()
@@ -744,9 +747,9 @@ mod tests {
     use topology::NodeId;
 
     fn active_hierarchy() -> GraphDeclaration {
-        let active = |prerequisites, when| NodeActivation::Active {
+        let active = |prerequisites, condition| NodeActivation::Active {
             prerequisites,
-            when,
+            condition,
         };
         GraphDeclaration::new(
             [DeclaredGraph::Root, DeclaredGraph::OwnedBy(NodeId::new(0))],
@@ -809,12 +812,12 @@ mod tests {
         declaration.conditions.insert(0, RuntimeCondition::new([]));
         let NodeActivation::Active {
             prerequisites,
-            when,
+            condition,
         } = &mut declaration.nodes[2].activation
         else {
             unreachable!();
         };
-        *when = Some(ConditionId::new(1));
+        *condition = Some(ConditionId::new(1));
         prerequisites[0] = DeclarationPrerequisite::RuntimeConditional {
             node: NodeId::new(1),
             condition: ConditionId::new(1),
@@ -823,7 +826,7 @@ mod tests {
         let compiled = declaration.compile().unwrap();
         assert_eq!(compiled.declaration_conditions(), [ConditionId::new(1)]);
         assert_eq!(
-            compiled.graph().nodes()[2].when(),
+            compiled.graph().nodes()[2].condition(),
             Some(ConditionId::new(0))
         );
     }
@@ -866,7 +869,7 @@ mod tests {
                     DeclaredNodeKind::Leaf,
                     NodeActivation::Active {
                         prerequisites: vec![DeclarationPrerequisite::Required(NodeId::new(0))],
-                        when: None,
+                        condition: None,
                     },
                 ),
             ],
@@ -895,7 +898,7 @@ mod tests {
                     DeclaredNodeKind::Leaf,
                     NodeActivation::Active {
                         prerequisites: vec![],
-                        when: Some(ConditionId::new(0)),
+                        condition: Some(ConditionId::new(0)),
                     },
                 ),
             ],
@@ -922,7 +925,7 @@ mod tests {
                     DeclaredNodeKind::Leaf,
                     NodeActivation::Active {
                         prerequisites: vec![],
-                        when: None,
+                        condition: None,
                     },
                 ),
             ],

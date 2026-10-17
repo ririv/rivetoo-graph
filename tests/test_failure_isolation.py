@@ -104,8 +104,8 @@ def test_condition_exception_blocks_all_users_without_stopping_other_work(execut
     condition = runtime_condition(when=broken)
     graph = Graph(
         steps=(
-            Step(lambda: calls.append("wrong-a"), when=condition),
-            Step(lambda: calls.append("wrong-b"), when=condition),
+            Step(lambda: calls.append("wrong-a"), condition=condition),
+            Step(lambda: calls.append("wrong-b"), condition=condition),
             Step(lambda: calls.append("good")),
         )
     )
@@ -133,7 +133,7 @@ def test_condition_does_not_read_failed_action_result(execute):
             producer,
             Step(
                 lambda: None,
-                when=runtime_condition(when=needs_result, inputs=(producer,)),
+                condition=runtime_condition(when=needs_result, inputs=(producer,)),
             ),
             Step(lambda: calls.append("good")),
         )
@@ -334,7 +334,9 @@ def test_cancellation_from_condition_waits_for_started_async_action():
         steps=(
             Step(survive),
             ready,
-            Step(lambda: None, when=runtime_condition(when=cancel, inputs=(ready,))),
+            Step(
+                lambda: None, condition=runtime_condition(when=cancel, inputs=(ready,))
+            ),
         )
     )
     plan = GraphExecution(graph=graph, execution_control=control)

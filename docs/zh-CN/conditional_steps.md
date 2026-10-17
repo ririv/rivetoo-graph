@@ -4,7 +4,7 @@
 
 ## 用途
 
-条件边决定依赖是否成立；Step.when 决定节点自身是否参与执行。
+条件边决定依赖是否成立；Step.condition 决定节点自身是否参与执行。
 它适用于 Python 叶子、Python Graph 子图和 NativeGraph 子图。
 
 ## 声明
@@ -12,15 +12,29 @@
 定义见 [model.py](../../src/rivetoo_graph/model.py)：
 
 ```python
-Step(action=..., label=..., when=...)
+Step(action=..., label=..., condition=...)
 ```
 
-label 只用于展示。when 接受 `RuntimeCondition | None`，不接受 bool。
+label 只用于展示。condition 接受 `RuntimeCondition | None`，不接受 bool。
+
+外层 `condition` 与条件边一样，绑定条件对象；`runtime_condition` 内部的 `when`
+才是判断条件是否成立的函数：
+
+```python
+probe = Step(lambda: 42)
+condition = runtime_condition(
+    inputs=(probe,),
+    when=lambda result: result.unwrap() == 42,
+)
+build = Step(build_source, condition=condition)
+```
+
+子图挂载同样使用 `child_graph.step(condition=condition)`。
 接线通过 `Step.wire(after=...)` 声明，最终保存在 Graph.edges，而非 Step 本身。
 
 ## 语义
 
-| when | 行为 |
+| condition | 行为 |
 | --- | --- |
 | None | 节点启用 |
 | 运行时条件为真 | 按普通 prerequisite 等待并执行 |
@@ -33,7 +47,7 @@ label 只用于展示。when 接受 `RuntimeCondition | None`，不接受 bool�
 
 ## 静态节点和子图
 
-静态条件不放在 Step.when 中，而由 StaticConditions 绑定解释器后声明：
+静态条件不放在 Step.condition 中，而由 StaticConditions 绑定解释器后声明：
 
 ```python
 static = StaticConditions(evaluator=evaluate_target_condition)
@@ -65,7 +79,7 @@ graph = Graph(
 
 规则必须引用图中已声明的节点或边。节点和边使用同一个映射，不需要两套 Step / Graph。
 条件只在编译时求值；同一声明可重复编译，但 evaluator 应保持纯函数语义。
-静态节点规则可以与节点自身的运行时 when 同时存在：先静态裁剪，再运行时判断。
+静态节点规则可以与节点自身的运行时 condition 同时存在：先静态裁剪，再运行时判断。
 
 ## 与条件边的区别
 
@@ -92,11 +106,11 @@ A --[condition]--> B
 - composite 保留子图边界，不占用 worker，也不成为 no-op leaf。
 
 [compile.py](../../src/rivetoo_graph/compile.py) 将条件边归一化为
-CompiledConditionalDependency，将运行时 Step.when 归一化为节点的
+CompiledConditionalDependency，将运行时 Step.condition 归一化为节点的
 CompiledRuntimeCondition，不把节点条件改写成条件边。
 
 声明期子图的叶子加入统一执行结构，边界成为 CompiledComposite，保留依赖、后继、
-observation 与 when。激活后才释放直接子节点；空 composite 也保留依赖边界。
+observation 与 condition。激活后才释放直接子节点；空 composite 也保留依赖边界。
 
 ## inputs 与执行前置
 
@@ -110,7 +124,7 @@ prepare_b = Step(prepare_b_source, label="prepare_b")
 heavy_build = Step(
     build_source,
     label="heavy_build",
-    when=runtime_condition(
+    condition=runtime_condition(
         inputs=(probe,),
         when=lambda result: bool(result.unwrap()),
     ),

@@ -167,7 +167,7 @@ class CompiledExecutionHost:
 
     def record_condition_skip(self, node: int) -> None:
         compiled_node = self.compilation._native_node(node)
-        condition = compiled_node.when
+        condition = compiled_node.condition
         if condition is None:
             raise GraphError(
                 f"disabled compiled step has no runtime condition: {compiled_node.id}"

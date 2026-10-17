@@ -121,7 +121,7 @@ belong to the host.
 
 ```python
 static = StaticConditions(evaluator=evaluate_target_condition)
-graph = static.edge(checks, build, when=wait_for_checks).graph()
+graph = static.edge(checks, build, condition=wait_for_checks).graph()
 ```
 
 This returns ordinary GraphWiring without gate Steps. Unlike static.when, false

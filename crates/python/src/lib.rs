@@ -235,12 +235,12 @@ impl NativeCompiledExecutionGraph {
         composite_child_graphs: Vec<(usize, usize)>,
         graph_owners: Vec<Option<usize>>,
         prerequisites: Vec<Vec<(usize, Option<usize>)>>,
-        when_conditions: Vec<Option<usize>>,
+        node_conditions: Vec<Option<usize>>,
         condition_reads: Vec<Vec<usize>>,
         capability_bindings: Vec<(usize, usize)>,
     ) -> PyResult<Self> {
         let node_count = node_graphs.len();
-        if prerequisites.len() != node_count || when_conditions.len() != node_count {
+        if prerequisites.len() != node_count || node_conditions.len() != node_count {
             return Err(PyValueError::new_err(
                 "compiled execution graph node columns have different lengths",
             ));
@@ -263,9 +263,9 @@ impl NativeCompiledExecutionGraph {
         let nodes = node_graphs
             .into_iter()
             .zip(prerequisites)
-            .zip(when_conditions)
+            .zip(node_conditions)
             .enumerate()
-            .map(|(index, ((graph, prerequisites), when))| {
+            .map(|(index, ((graph, prerequisites), condition))| {
                 let prerequisites = prerequisites.into_iter().map(|(node, condition)| {
                     condition.map_or_else(
                         || Prerequisite::Required(NodeId::new(node)),
@@ -275,14 +275,14 @@ impl NativeCompiledExecutionGraph {
                         },
                     )
                 });
-                let when = when.map(ConditionId::new);
+                let condition = condition.map(ConditionId::new);
                 match child_graphs.get(&index) {
-                    None => DeclaredNode::leaf(GraphId::new(graph), prerequisites, when),
+                    None => DeclaredNode::leaf(GraphId::new(graph), prerequisites, condition),
                     Some(child_graph) => DeclaredNode::composite(
                         GraphId::new(graph),
                         GraphId::new(*child_graph),
                         prerequisites,
-                        when,
+                        condition,
                     ),
                 }
             });
@@ -341,11 +341,11 @@ impl NativeCompiledExecutionGraph {
             .collect()
     }
 
-    fn when_conditions(&self) -> Vec<Option<usize>> {
+    fn node_conditions(&self) -> Vec<Option<usize>> {
         self.graph
             .nodes()
             .iter()
-            .map(|node| node.when().map(ConditionId::index))
+            .map(|node| node.condition().map(ConditionId::index))
             .collect()
     }
 

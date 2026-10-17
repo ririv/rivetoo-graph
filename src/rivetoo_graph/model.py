@@ -255,7 +255,7 @@ def _validated_blocking_arcs(
                     f"component {edge.target.label} does not require capability "
                     f"{edge.capability.name}"
                 )
-            if isinstance(edge.source.when, RuntimeCondition):
+            if isinstance(edge.source.condition, RuntimeCondition):
                 raise GraphError(
                     f"graph '{graph_label}' capability provider component must not "
                     f"have a runtime condition: {edge.source.label}"
@@ -263,7 +263,7 @@ def _validated_blocking_arcs(
             provider_graph = edge.source.action
             if isinstance(provider_graph, Graph):
                 output = provider_graph.capabilities.outputs[edge.capability]
-                if isinstance(output.when, RuntimeCondition):
+                if isinstance(output.condition, RuntimeCondition):
                     raise GraphError(
                         f"graph '{graph_label}' capability output step must not have "
                         f"a runtime condition: {edge.capability.name}"
@@ -283,8 +283,8 @@ def _validated_blocking_arcs(
                     yield arc
 
     for step in steps:
-        if isinstance(step.when, RuntimeCondition):
-            for read_step in step.when.inputs:
+        if isinstance(step.condition, RuntimeCondition):
+            for read_step in step.condition.inputs:
                 arc = unique_arc(read_step, step)
                 if arc is not None:
                     yield arc
@@ -294,18 +294,18 @@ def _validated_blocking_arcs(
 class Step:
     label: str | None
     action: StepAction
-    # `when` 控制的是 step 本身是否参与这次图执行，而不是依赖边是否成立。
+    # `condition` 控制的是 step 本身是否参与这次图执行，而不是依赖边是否成立。
     # 约定：
     # - RuntimeCondition: 运行时求值；为 False 时该 step 进入 Skipped 终态
     # 这条语义对 leaf step 和 graph-action step 完全一致。
-    when: RuntimeCondition | None = None
+    condition: RuntimeCondition | None = None
 
     def __init__(
         self,
         action: StepActionInput,
         *,
         label: str | None = None,
-        when: RuntimeCondition | None = None,
+        condition: RuntimeCondition | None = None,
     ) -> None:
         if label == "":
             raise GraphError("step label must not be empty")
@@ -322,7 +322,7 @@ class Step:
 
         object.__setattr__(self, "label", label)
         object.__setattr__(self, "action", normalized_action)
-        object.__setattr__(self, "when", when)
+        object.__setattr__(self, "condition", condition)
 
     def wire(
         self,
@@ -423,8 +423,8 @@ class GraphWiring:
                         sources.add(read_step)
                         targets.add(edge.target)
         for step in self.steps:
-            if isinstance(step.when, RuntimeCondition):
-                for read_step in step.when.inputs:
+            if isinstance(step.condition, RuntimeCondition):
+                for read_step in step.condition.inputs:
                     if read_step in known_steps:
                         sources.add(read_step)
                         targets.add(step)
@@ -580,14 +580,14 @@ class Graph:
         self,
         *,
         label: str | None = None,
-        when: RuntimeCondition | None = None,
+        condition: RuntimeCondition | None = None,
     ) -> Step:
         """把当前图包装成一个可挂载 step。"""
 
         return Step(
             self,
             label=self.label if label is None else label,
-            when=when,
+            condition=condition,
         )
 
     def incoming_edges(self, step: Step) -> tuple[GraphEdge, ...]:

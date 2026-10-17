@@ -105,7 +105,7 @@ write_android_env_shim       （仍独立执行）
 
 ```python
 static = StaticConditions(evaluator=evaluate_target_condition)
-graph = static.edge(checks, build, when=wait_for_checks).graph()
+graph = static.edge(checks, build, condition=wait_for_checks).graph()
 ```
 
 这仍是普通 GraphWiring，不增加 gate Step。与 static.when 不同，条件为假只删除边，

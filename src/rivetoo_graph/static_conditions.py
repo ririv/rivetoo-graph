@@ -59,13 +59,15 @@ class StaticConditions:
         mounted = component.step() if isinstance(component, Graph) else component
         return GraphWiring(steps=(mounted,), static=(self._append(mounted, condition),))
 
-    def edge(self, source: Step, target: Step, *, when: StaticCondition) -> GraphWiring:
+    def edge(
+        self, source: Step, target: Step, *, condition: StaticCondition
+    ) -> GraphWiring:
         from .model import GraphWiring, UnconditionalEdge
 
         return GraphWiring(
             steps=(source, target),
             edges=(UnconditionalEdge(source=source, target=target),),
-            static=(self._append((source, target), when),),
+            static=(self._append((source, target), condition),),
         )
 
 

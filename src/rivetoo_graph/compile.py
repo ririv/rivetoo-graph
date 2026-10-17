@@ -105,7 +105,7 @@ class CompiledStep:
     ref: CompiledStepRef
     action: LeafAction
     after: tuple[CompiledPrerequisite, ...]
-    when: CompiledRuntimeCondition | None
+    condition: CompiledRuntimeCondition | None
     owner: CompiledCompositeRef | None
     context: CompiledStepContext
 
@@ -120,7 +120,7 @@ class CompiledNativeStep:
 
     ref: CompiledStepRef
     after: tuple[CompiledPrerequisite, ...]
-    when: CompiledRuntimeCondition | None
+    condition: CompiledRuntimeCondition | None
     owner: CompiledCompositeRef | None
     context: CompiledStepContext
 
@@ -143,7 +143,7 @@ class CompiledComposite:
     graph_label: str
     children: tuple[CompiledNodeRef, ...]
     after: tuple[CompiledPrerequisite, ...]
-    when: CompiledRuntimeCondition | None
+    condition: CompiledRuntimeCondition | None
     owner: CompiledCompositeRef | None
     observation: GraphObservationMessages
     context: CompiledStepContext
@@ -486,8 +486,8 @@ def _validate_compiled_node(
         )
         if isinstance(prerequisite, CompiledConditionalDependency):
             _validate_compiled_condition(nodes, prerequisite.condition)
-    if node.when is not None:
-        _validate_compiled_condition(nodes, node.when)
+    if node.condition is not None:
+        _validate_compiled_condition(nodes, node.condition)
 
 
 def _validate_compiled_condition(
@@ -529,7 +529,7 @@ def _materialize_native_execution_graph(
     graph_owners: list[int | None] = [None, *composite_indexes]
     node_graphs: list[int] = []
     prerequisites: list[list[tuple[int, int | None]]] = []
-    when_conditions: list[int | None] = []
+    node_conditions: list[int | None] = []
     for node in nodes:
         node_graphs.append(
             0
@@ -547,8 +547,8 @@ def _materialize_native_execution_graph(
                 for prerequisite in node.after
             ]
         )
-        when_conditions.append(
-            None if node.when is None else register_condition(node.when)
+        node_conditions.append(
+            None if node.condition is None else register_condition(node.condition)
         )
 
     native_graph = NativeCompiledExecutionGraph(
@@ -556,7 +556,7 @@ def _materialize_native_execution_graph(
         list(composite_child_graphs.items()),
         graph_owners,
         prerequisites,
-        when_conditions,
+        node_conditions,
         condition_reads,
         [],
     )
@@ -682,7 +682,7 @@ def _materialize_native_compilation(
         for predicate, reads in zip(predicates, condition_reads, strict=True)
     )
     native_after = native.graph.all_prerequisites()
-    native_when = native.graph.when_conditions()
+    native_conditions = native.graph.node_conditions()
 
     def prerequisite(value: tuple[int, int | None]) -> CompiledPrerequisite:
         node, condition = value
@@ -716,8 +716,10 @@ def _materialize_native_compilation(
             else _require_composite_ref(refs_by_declaration[owner_declaration])
         )
         after = tuple(prerequisite(value) for value in native_after[compiled_index])
-        when_index = native_when[compiled_index]
-        when = None if when_index is None else compiled_conditions[when_index]
+        condition_index = native_conditions[compiled_index]
+        condition = (
+            None if condition_index is None else compiled_conditions[condition_index]
+        )
         ref = refs_by_declaration[declaration]
         child_graph = child_graphs[compiled_index]
         if child_graph is None:
@@ -727,7 +729,7 @@ def _materialize_native_compilation(
                 compiled_step = CompiledNativeStep(
                     ref=cast("CompiledStepRef", ref),
                     after=after,
-                    when=when,
+                    condition=condition,
                     owner=owner,
                     context=context,
                 )
@@ -736,7 +738,7 @@ def _materialize_native_compilation(
                     ref=cast("CompiledStepRef", ref),
                     action=cast("LeafAction", action),
                     after=after,
-                    when=when,
+                    condition=condition,
                     owner=owner,
                     context=context,
                 )
@@ -757,7 +759,7 @@ def _materialize_native_compilation(
                 if child in declaration_to_compiled
             ),
             after=after,
-            when=when,
+            condition=condition,
             owner=owner,
             observation=(
                 component_source_graph.observation

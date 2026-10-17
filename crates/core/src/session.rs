@@ -435,7 +435,7 @@ impl ExecutionSession {
             return;
         }
         let explicitly_skipped = self.is_explicitly_skipped(node_id);
-        if let Some(condition) = node.when()
+        if let Some(condition) = node.condition()
             && !explicitly_skipped
         {
             let Some(outcome) = self.condition_value(node_id, condition) else {

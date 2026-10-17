@@ -61,13 +61,13 @@ def render_compiled_step_label(step: CompiledLeaf, path: tuple[str, ...]) -> str
     return render_step_path(path)
 
 
-def render_when_suffix(
+def render_condition_suffix(
     step: Step | CompiledLeaf | CompiledComposite,
 ) -> str:
-    when = step.when
-    if when is None:
+    condition = step.condition
+    if condition is None:
         return ""
-    return f" [when: {condition_name(when)}]"
+    return f" [condition: {condition_name(condition)}]"
 
 
 def render_after_suffix(

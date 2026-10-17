@@ -43,7 +43,7 @@ pub struct DeclaredNode {
     graph: GraphId,
     kind: DeclaredNodeKind,
     prerequisites: Vec<Prerequisite>,
-    when: Option<ConditionId>,
+    condition: Option<ConditionId>,
 }
 
 impl DeclaredNode {
@@ -51,13 +51,13 @@ impl DeclaredNode {
     pub fn leaf(
         graph: GraphId,
         prerequisites: impl IntoIterator<Item = Prerequisite>,
-        when: Option<ConditionId>,
+        condition: Option<ConditionId>,
     ) -> Self {
         Self {
             graph,
             kind: DeclaredNodeKind::Leaf,
             prerequisites: prerequisites.into_iter().collect(),
-            when,
+            condition,
         }
     }
 
@@ -66,13 +66,13 @@ impl DeclaredNode {
         graph: GraphId,
         child_graph: GraphId,
         prerequisites: impl IntoIterator<Item = Prerequisite>,
-        when: Option<ConditionId>,
+        condition: Option<ConditionId>,
     ) -> Self {
         Self {
             graph,
             kind: DeclaredNodeKind::Composite { child_graph },
             prerequisites: prerequisites.into_iter().collect(),
-            when,
+            condition,
         }
     }
 }
@@ -189,9 +189,11 @@ impl ExecutionGraphDeclaration {
                 DeclaredGraph::OwnedBy(owner) => Some(owner),
             };
             match node.kind {
-                DeclaredNodeKind::Leaf => ExecutionNode::leaf(owner, node.prerequisites, node.when),
+                DeclaredNodeKind::Leaf => {
+                    ExecutionNode::leaf(owner, node.prerequisites, node.condition)
+                }
                 DeclaredNodeKind::Composite { .. } => {
-                    ExecutionNode::composite(owner, node.prerequisites, node.when)
+                    ExecutionNode::composite(owner, node.prerequisites, node.condition)
                 }
             }
         });

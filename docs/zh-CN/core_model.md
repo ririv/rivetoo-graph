@@ -68,7 +68,7 @@ Step 本身不保存 `after`。运行时条件的 `inputs` 是另一类显式阻
 
 - `label: str | None`
 - `action: LeafAction | Graph | NativeGraph`
-- `when: RuntimeCondition | None`
+- `condition: RuntimeCondition | None`
 
 `Step` 没有公开 `id`，也不保存 `after`。
 
@@ -208,7 +208,7 @@ pipeline = (prepare >> child_graph >> install).graph()
 ```python
 child_step = child_graph.step(
     label="build",
-    when=condition,
+    condition=condition,
 )
 ```
 
@@ -240,7 +240,7 @@ selected_graph = select_one(
 )()
 ```
 
-这与 `Step.when` 的语义不同：`Step.when` 是执行图中一个节点的运行时启用条件；
+这与 `Step.condition` 的语义不同：`Step.condition` 是执行图中一个节点的运行时启用条件；
 `select_one()` 是进入 Graph 之前的严格构图选择。
 
 ## `LeafAction`
@@ -315,12 +315,12 @@ def select_graph(run_ctx: StepRunContext) -> Graph:
 
 条件分成两层：
 
-- `Step.when`
+- `Step.condition`
   - 控制 Step 本身是否参与执行
 - `ConditionalEdge`
   - 控制一条 prerequisite 是否成立
 
-Step.when 和 ConditionalEdge 只接受 RuntimeCondition。
+Step.condition 和 ConditionalEdge 只接受 RuntimeCondition。
 静态条件通过 `StaticConditions(evaluator=..., conditions=...)` 绑定节点或边，
 在编译阶段求值；直接构造与 DSL 写法见[条件 Step](./conditional_steps.md)。
 
@@ -418,7 +418,7 @@ Rust 编译路径会把声明期已知子图转换为统一执行结构：
 - 子图边界
 - 直接子节点
 - prerequisite
-- runtime `when`
+- runtime `condition`
 - observation
 - 整体完成状态
 

@@ -102,13 +102,13 @@ def test_pruned_native_side_tables_keep_only_compiled_nodes() -> None:
     removed = Step(
         lambda: None,
         label="removed",
-        when=runtime_condition(inputs=(), when=lambda: False),
+        condition=runtime_condition(inputs=(), when=lambda: False),
     )
     kept = Step(lambda: None, label="kept")
     checked = Step(
         lambda: None,
         label="checked",
-        when=runtime_condition(inputs=(kept,), when=lambda _ctx: True),
+        condition=runtime_condition(inputs=(kept,), when=lambda _ctx: True),
     )
     graph = Graph(
         steps=(removed, kept, checked),
@@ -126,8 +126,8 @@ def test_pruned_native_side_tables_keep_only_compiled_nodes() -> None:
     assert native.condition_reads() == [[1]]
     compiled = compile_graph(graph, root_label="test")
     assert [step.id for step in compiled.steps] == [StepId((1,)), StepId((2,))]
-    assert compiled.steps[1].when is not None
-    assert compiled.steps[1].when.inputs == (compiled.steps[0].ref,)
+    assert compiled.steps[1].condition is not None
+    assert compiled.steps[1].condition.inputs == (compiled.steps[0].ref,)
 
 
 def test_graph_compilation_rejects_unknown_prerequisite() -> None:
@@ -194,7 +194,7 @@ def test_graph_rejects_runtime_condition_read_cycle() -> None:
     build = Step(label="build", action=lambda: None)
     prepare = Step(
         label="prepare",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(build,),
             when=lambda _ctx: True,
         ),
@@ -228,7 +228,7 @@ def test_graph_compilation_rejects_runtime_condition_read_cycle() -> None:
             steps=(
                 replace(
                     prepare,
-                    when=CompiledRuntimeCondition(
+                    condition=CompiledRuntimeCondition(
                         inputs=(build.ref,),
                         when=lambda _ctx: True,
                     ),
@@ -452,7 +452,7 @@ def test_render_graph_execution_overlays_runtime_status() -> None:
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: True))
     build = Step(
         label="build",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: not bool(result.unwrap()),
         ),
@@ -477,7 +477,7 @@ def test_render_graph_execution_overlays_runtime_status() -> None:
         [
             "execution: root (mode=dynamic)",
             "├─ probe [executed] [result=true]",
-            "└─ build [when=false] [skipped] [after: probe]",
+            "└─ build [condition=false] [skipped] [after: probe]",
         ]
     )
 
@@ -486,7 +486,7 @@ def test_render_live_graph_execution_hides_not_reached_steps() -> None:
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: True))
     build = Step(
         label="build",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: not bool(result.unwrap()),
         ),
@@ -823,7 +823,7 @@ def test_compile_graph_preserves_runtime_when_on_leaf_step() -> None:
     write_cache = Step(
         label="write_cache",
         action=LeafAction(fn=lambda: None),
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: bool(result.unwrap()),
         ),
@@ -839,7 +839,7 @@ def test_compile_graph_preserves_runtime_when_on_leaf_step() -> None:
     compilation = GraphExecution(graph=graph).compile()
 
     assert compilation.steps[1].id == StepId((1,))
-    assert compilation.steps[1].when is not None
+    assert compilation.steps[1].condition is not None
 
 
 def test_compile_graph_flattens_runtime_conditioned_composite() -> None:
@@ -847,7 +847,7 @@ def test_compile_graph_flattens_runtime_conditioned_composite() -> None:
     configure = Step(label="configure", action=LeafAction(fn=lambda: None))
     stage = Step(
         label="stage",
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,),
             when=lambda result: bool(result.unwrap()),
         ),
@@ -874,8 +874,8 @@ def test_compile_graph_flattens_runtime_conditioned_composite() -> None:
     stage = compilation.composites[0]
     assert stage.label_path == ("stage",)
     assert stage.after == (CompiledStepRef(StepId((0,))),)
-    assert stage.when is not None
-    assert stage.when.inputs == (CompiledStepRef(StepId((0,))),)
+    assert stage.condition is not None
+    assert stage.condition.inputs == (CompiledStepRef(StepId((0,))),)
     assert stage.children == (CompiledStepRef(StepId((1, 0))),)
 
 

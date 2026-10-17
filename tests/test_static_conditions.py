@@ -54,7 +54,7 @@ def test_static_edge_keeps_both_actions(enabled: bool, mode: GraphMode) -> None:
     last = Step(lambda: calls.append("last"))
     graph = (
         StaticConditions(evaluator=evaluate)
-        .edge(first, last, when=ENABLED if enabled else DISABLED)
+        .edge(first, last, condition=ENABLED if enabled else DISABLED)
         .graph()
     )
 
@@ -96,7 +96,7 @@ def test_static_and_runtime_rules_coexist_on_nodes_and_edges(mode: GraphMode) ->
     first = Step(lambda: calls.append("first"))
     last = Step(
         lambda: calls.append("last"),
-        when=runtime_condition(when=lambda: False),
+        condition=runtime_condition(when=lambda: False),
     )
     graph = Graph(
         steps=(first, last),
@@ -108,7 +108,7 @@ def test_static_and_runtime_rules_coexist_on_nodes_and_edges(mode: GraphMode) ->
     )
 
     compiled = compile_graph(graph, root_label="root")
-    assert compiled.steps[1].when is not None
+    assert compiled.steps[1].condition is not None
     assert compiled.steps[1].after
     GraphExecution(graph).run(options=ThreadGraphRunOptions(), mode=mode)
     assert calls == ["first"]
@@ -188,7 +188,7 @@ def test_static_pruning_does_not_leave_runtime_reads_without_a_source() -> None:
     probe = Step(lambda: True)
     consumer = Step(
         lambda: None,
-        when=runtime_condition(
+        condition=runtime_condition(
             inputs=(probe,), when=lambda result: bool(result.unwrap())
         ),
     )

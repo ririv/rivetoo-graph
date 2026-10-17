@@ -37,7 +37,9 @@ def declaration(case: Case, recipes: int, steps: int) -> Graph:
                 leaves[0],
                 Step(
                     noop,
-                    when=runtime_condition(inputs=(leaves[0],), when=lambda _ctx: True),
+                    condition=runtime_condition(
+                        inputs=(leaves[0],), when=lambda _ctx: True
+                    ),
                 ),
                 *leaves[2:],
             )

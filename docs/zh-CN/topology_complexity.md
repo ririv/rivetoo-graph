@@ -39,7 +39,7 @@ Python 的 `DirectedTopology` 并不是 Rust topology 的逐方法 FFI 包装。
 
 - V：本层 Graph 的 Step 数量。
 - E：本层显式边数量。
-- B：条件边和 `Step.when` 中所有 `RuntimeCondition.inputs` 引用总数。
+- B：条件边和 `Step.condition` 中所有 `RuntimeCondition.inputs` 引用总数。
 - A：去重后的本层阻塞 arc 数量，A ≤ E + B。
 
 本层阻塞关系来自普通边、条件边的来源节点和运行时条件的读取依赖。
