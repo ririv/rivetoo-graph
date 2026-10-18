@@ -43,8 +43,10 @@ class CompiledExecutionHost:
         self.compilation = compilation
         self.state = state
         # inputs 是显式的数据依赖；执行生产者前即开启记录，无需调用方另配 store。
-        # 最多检查 C 个已编译条件，O(C) 时间、O(1) 额外空间，不扫描全部步骤。
-        if any(condition.inputs for condition in compilation._native_conditions):
+        # 最多检查 C 个条件和 V 个步骤，O(C + V) 时间、O(1) 额外空间。
+        if any(condition.inputs for condition in compilation._native_conditions) or any(
+            isinstance(step, CompiledStep) and step.inputs for step in compilation.steps
+        ):
             state._enable_results()
         self.observer = observer
         self.run_leaf_callback = run_leaf

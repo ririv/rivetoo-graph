@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from ..compile import CompiledStep, GraphCompilation, compile_graph
 from ..model import Graph
 from ..observe import GraphObservationPhase
+from ..option import Nothing, Option
 from .executor_common import emit_graph_observation
 from .run import CompiledGraphRun, RuntimeStep
 from .session_tree import (
@@ -39,7 +40,9 @@ class PythonActionRuntime:
     action_log: GraphActionLog
     shared: object | None
     record_composites_as_steps: bool
-    invoke: Callable[[LeafAction, StepRunContext, GraphActionLog], object]
+    invoke: Callable[
+        [LeafAction, StepRunContext, GraphActionLog, tuple[Option[object], ...]], object
+    ]
 
     def prepare(
         self, compilation: GraphCompilation, *, step_log_path: Path | None = None
@@ -97,7 +100,18 @@ class PythonActionRuntime:
             execution_control=self.control,
         )
         try:
-            value = self.invoke(step.action, ctx, self.action_log)
+            results = self.state.results
+            if step.inputs and results is None:
+                raise RuntimeError("result inputs require an initialized result store")
+            inputs = (
+                ()
+                if results is None
+                else tuple(
+                    Nothing() if (result := results.get(ref.id)) is None else result
+                    for ref in step.inputs
+                )
+            )
+            value = self.invoke(step.action, ctx, self.action_log, inputs)
             if inspect.isawaitable(value):
                 return self._await_step(run, step, ctx, value)
             return self._finish_step(run, step, ctx, value)

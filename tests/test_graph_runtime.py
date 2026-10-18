@@ -26,7 +26,7 @@ from rivetoo_graph import (
     GraphObservationMessages,
     GraphResultStore,
     LeafAction,
-    ParentGraphStepRef,
+    Option,
     SerialGraphExecutor,
     StaticCondition,
     StaticConditionEvaluator,
@@ -405,13 +405,13 @@ def test_graph_execution_run_records_sync_step_results() -> None:
     prepare = Step(label="prepare", action=LeafAction(fn=lambda _ctx: "prepared"))
     build = Step(
         label="build",
-        action=LeafAction(fn=lambda run_ctx: f"{run_ctx.require_value(prepare)}:built"),
+        action=LeafAction(fn=lambda _ctx, result: f"{result.unwrap()}:built"),
     )
     graph = Graph.from_wiring(
         label="root",
         wiring=(
             prepare.wire(),
-            build.wire(after=(prepare,)),
+            build.wire(inputs={build.action: (prepare,)}),
         ),
     )
 
@@ -711,29 +711,22 @@ def test_reused_subgraph_mounts_have_distinct_step_instances(
         plan.require_result(shared_step)
 
 
-def test_step_run_context_reads_parent_graph_step_results_by_ref() -> None:
+def test_dynamic_subgraph_captures_explicit_result_input() -> None:
     def _prepare(_run_ctx: StepRunContext) -> str:
         return "prepared"
 
     prepare = Step(label="prepare", action=LeafAction(fn=_prepare))
 
-    def _nested(run_ctx: StepRunContext) -> str:
-        return (
-            "nested:"
-            f"{run_ctx.require_value(ParentGraphStepRef(step=prepare, levels_up=1))}"
-        )
+    def expand(_ctx: StepRunContext, result: Option[object]) -> Graph:
+        nested_step = Step(label="nested", action=lambda: f"nested:{result.unwrap()}")
+        return Graph.from_wiring((nested_step.wire(),), label="nested")
 
-    nested_step = Step(label="nested", action=LeafAction(fn=_nested))
-    nested = Graph.from_wiring(
-        label="nested",
-        wiring=(nested_step.wire(),),
-    )
-    stage = Step(label="stage", action=nested)
+    stage = Step(label="stage", action=expand)
     root = Graph.from_wiring(
         label="root",
         wiring=(
             prepare.wire(),
-            stage.wire(after=(prepare,)),
+            stage.wire(inputs={stage.action: (prepare,)}),
         ),
     )
 
@@ -756,11 +749,7 @@ def test_runtime_condition_true_waits_for_source_step(mode: GraphMode) -> None:
     )
     build = Step(
         label="build",
-        action=LeafAction(
-            fn=lambda run_ctx: (
-                f"{run_ctx.require_value(probe)}:{run_ctx.require_value(configure)}"
-            )
-        ),
+        action=LeafAction(fn=lambda _ctx, result: f"{result.unwrap()}:built"),
     )
     graph = Graph.from_wiring(
         label="root",
@@ -770,15 +759,16 @@ def test_runtime_condition_true_waits_for_source_step(mode: GraphMode) -> None:
             configure.wire(after=(setup,)),
             build.wire(
                 after=(
-                    probe,
                     ConditionalPrerequisite(
                         step=configure,
-                        condition=runtime_condition(
-                            when=lambda result: result.unwrap() == "miss",
-                            inputs=(probe,),
+                        condition=(
+                            edge_condition_764 := runtime_condition(
+                                when=lambda result: result.unwrap() == "miss"
+                            )
                         ),
                     ),
-                )
+                ),
+                inputs={build.action: (probe,), edge_condition_764: (probe,)},
             ),
         ),
     )
@@ -789,7 +779,10 @@ def test_runtime_condition_true_waits_for_source_step(mode: GraphMode) -> None:
     ).run(options=ThreadGraphRunOptions(workers=1), mode=mode)
 
     assert state.results is not None
-    assert state.results.require(StepId((3,))).value == "miss:configured"
+    assert state.results.require(StepId((3,))).value == "miss:built"
+    assert state.executed_steps.index(StepId((2,))) < state.executed_steps.index(
+        StepId((3,))
+    )
 
 
 @pytest.mark.parametrize("mode", ["dynamic", "compiled"])
@@ -806,8 +799,8 @@ def test_runtime_step_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
     second = Step(label="second", action=lambda: None)
     target = Step(
         label="target",
-        condition=runtime_condition(inputs=(probe,), when=_condition),
-        action=lambda: None,
+        condition=(target_condition := runtime_condition(when=_condition)),
+        action=lambda _ctx, *_inputs: None,
     )
     graph = Graph.from_wiring(
         label="root",
@@ -815,7 +808,10 @@ def test_runtime_step_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
             probe.wire(),
             first.wire(),
             second.wire(),
-            target.wire(after=(first, second)),
+            target.wire(
+                after=(first, second),
+                inputs={target.action: (probe,), target_condition: (probe,)},
+            ),
         ),
     )
 
@@ -840,7 +836,7 @@ def test_runtime_edge_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
     first = Step(label="first", action=lambda: None)
     second = Step(label="second", action=lambda: None)
     source = Step(label="source", action=lambda: None)
-    target = Step(label="target", action=lambda: None)
+    target = Step(label="target", action=lambda _ctx, *_inputs: None)
     graph = Graph.from_wiring(
         label="root",
         wiring=(
@@ -854,12 +850,14 @@ def test_runtime_edge_condition_is_evaluated_once_per_run(mode: GraphMode) -> No
                     second,
                     ConditionalPrerequisite(
                         step=source,
-                        condition=runtime_condition(
-                            inputs=(probe,),
-                            when=_condition,
+                        condition=(
+                            edge_condition_848 := runtime_condition(
+                                when=_condition,
+                            )
                         ),
                     ),
-                )
+                ),
+                inputs={target.action: (probe,), edge_condition_848: (probe,)},
             ),
         ),
     )
@@ -911,7 +909,7 @@ def test_runtime_condition_false_does_not_require_source_result(
     )
     build = Step(
         label="build",
-        action=LeafAction(fn=lambda run_ctx: run_ctx.require_value(probe)),
+        action=LeafAction(fn=lambda _ctx, result: result.unwrap()),
     )
     graph = Graph.from_wiring(
         label="root",
@@ -921,15 +919,16 @@ def test_runtime_condition_false_does_not_require_source_result(
             configure.wire(after=(setup,)),
             build.wire(
                 after=(
-                    probe,
                     ConditionalPrerequisite(
                         step=configure,
-                        condition=runtime_condition(
-                            when=lambda result: result.unwrap() == "miss",
-                            inputs=(probe,),
+                        condition=(
+                            edge_condition_917 := runtime_condition(
+                                when=lambda result: result.unwrap() == "miss"
+                            )
                         ),
                     ),
-                )
+                ),
+                inputs={build.action: (probe,), edge_condition_917: (probe,)},
             ),
         ),
     )
@@ -952,7 +951,7 @@ def test_runtime_condition_false_does_not_wait_for_source(mode: GraphMode) -> No
             raise AssertionError("build incorrectly waited for configure")
         return "configured"
 
-    def _build() -> str:
+    def _build(_ctx: StepRunContext, _result: Option[object]) -> str:
         build_started.set()
         return "built"
 
@@ -966,15 +965,16 @@ def test_runtime_condition_false_does_not_wait_for_source(mode: GraphMode) -> No
             configure.wire(),
             build.wire(
                 after=(
-                    probe,
                     ConditionalPrerequisite(
                         step=configure,
-                        condition=runtime_condition(
-                            when=lambda result: result.unwrap() == "miss",
-                            inputs=(probe,),
+                        condition=(
+                            edge_condition_961 := runtime_condition(
+                                when=lambda result: result.unwrap() == "miss"
+                            )
                         ),
                     ),
-                )
+                ),
+                inputs={build.action: (probe,), edge_condition_961: (probe,)},
             ),
         ),
     )
@@ -1271,15 +1271,13 @@ def test_serial_executor_runs_compiled_composite() -> None:
 def test_action_returned_graph_preserves_parent_scope(mode: GraphMode) -> None:
     prepare = Step(label="prepare", action=lambda: "prepared")
 
-    def _make_child() -> Graph:
+    def _make_child(_ctx: StepRunContext, result: Option[object]) -> Graph:
         return Graph.from_wiring(
             label="generated",
             wiring=(
                 Step(
                     label="consume",
-                    action=lambda ctx: ctx.require_value(
-                        ParentGraphStepRef(step=prepare, levels_up=1)
-                    ),
+                    action=lambda: result.unwrap(),
                 ).wire(),
             ),
         )
@@ -1289,7 +1287,7 @@ def test_action_returned_graph_preserves_parent_scope(mode: GraphMode) -> None:
         label="root",
         wiring=(
             prepare.wire(),
-            stage.wire(after=(prepare,)),
+            stage.wire(inputs={stage.action: (prepare,)}),
         ),
     )
 
@@ -1338,7 +1336,7 @@ def test_async_runtime_condition_false_does_not_wait_for_source(
     async def _configure() -> None:
         await asyncio.wait_for(build_started.wait(), timeout=1)
 
-    async def _build() -> None:
+    async def _build(_ctx: StepRunContext, _result: Option[object]) -> None:
         build_started.set()
 
     probe = Step(label="probe", action=lambda: "hit")
@@ -1351,15 +1349,16 @@ def test_async_runtime_condition_false_does_not_wait_for_source(
             configure.wire(),
             build.wire(
                 after=(
-                    probe,
                     ConditionalPrerequisite(
                         step=configure,
-                        condition=runtime_condition(
-                            when=lambda result: result.unwrap() == "miss",
-                            inputs=(probe,),
+                        condition=(
+                            edge_condition_1343 := runtime_condition(
+                                when=lambda result: result.unwrap() == "miss"
+                            )
                         ),
                     ),
-                )
+                ),
+                inputs={build.action: (probe,), edge_condition_1343: (probe,)},
             ),
         ),
     )
@@ -1490,9 +1489,9 @@ def test_run_freezes_static_conditions_before_execution(mode: GraphMode) -> None
     archive = Step(
         label="archive",
         action=LeafAction(
-            fn=lambda run_ctx: (
-                run_ctx.require_value(prepare),
-                run_ctx.require_value(android_shim),
+            fn=lambda _ctx, prepared, shim: (
+                prepared.unwrap(),
+                shim.unwrap(),
             )
         ),
     )
@@ -1502,10 +1501,12 @@ def test_run_freezes_static_conditions_before_execution(mode: GraphMode) -> None
             prepare.wire(),
             android_shim.wire(),
             archive.wire(
-                after=(
-                    prepare,
-                    android_shim,
-                )
+                inputs={
+                    archive.action: (
+                        prepare,
+                        android_shim,
+                    )
+                }
             ),
         ),
         static=StaticConditions(
@@ -1530,11 +1531,12 @@ def test_step_when_false_skips_step_and_allows_downstream_continue(
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: False))
     optional = Step(
         label="optional",
-        condition=runtime_condition(
-            inputs=(probe,),
-            when=lambda result: bool(result.unwrap()),
+        condition=(
+            optional_condition := runtime_condition(
+                when=lambda result: bool(result.unwrap()),
+            )
         ),
-        action=LeafAction(fn=lambda _ctx: "optional"),
+        action=LeafAction(fn=lambda _ctx, *_inputs: "optional"),
     )
     package = Step(
         label="package",
@@ -1544,7 +1546,10 @@ def test_step_when_false_skips_step_and_allows_downstream_continue(
         label="root",
         wiring=(
             probe.wire(),
-            optional.wire(after=(probe,)),
+            optional.wire(
+                after=(),
+                inputs={optional.action: (probe,), optional_condition: (probe,)},
+            ),
             package.wire(after=(optional,)),
         ),
     )
@@ -1569,9 +1574,10 @@ def test_dynamic_step_when_false_skips_graph_step() -> None:
     )
     stage = Step(
         label="stage",
-        condition=runtime_condition(
-            inputs=(probe,),
-            when=lambda result: bool(result.unwrap()),
+        condition=(
+            stage_condition := runtime_condition(
+                when=lambda result: bool(result.unwrap()),
+            )
         ),
         action=Graph.from_wiring(
             label="stage",
@@ -1583,7 +1589,7 @@ def test_dynamic_step_when_false_skips_graph_step() -> None:
         label="root",
         wiring=(
             probe.wire(),
-            stage.wire(after=(probe,)),
+            stage.wire(after=(), inputs={stage_condition: (probe,)}),
             package.wire(after=(stage,)),
         ),
     )
@@ -1605,9 +1611,10 @@ def test_compiled_runtime_when_false_matches_dynamic_for_graph_step() -> None:
     configure = Step(label="configure", action=LeafAction(fn=lambda _ctx: "cfg"))
     stage = Step(
         label="stage",
-        condition=runtime_condition(
-            inputs=(probe,),
-            when=lambda result: bool(result.unwrap()),
+        condition=(
+            stage_condition := runtime_condition(
+                when=lambda result: bool(result.unwrap()),
+            )
         ),
         action=Graph.from_wiring(label="stage", wiring=(configure.wire(),)),
     )
@@ -1616,7 +1623,7 @@ def test_compiled_runtime_when_false_matches_dynamic_for_graph_step() -> None:
         label="root",
         wiring=(
             probe.wire(),
-            stage.wire(after=(probe,)),
+            stage.wire(after=(), inputs={stage_condition: (probe,)}),
             package.wire(after=(stage,)),
         ),
     )
@@ -1636,17 +1643,14 @@ def test_compiled_runtime_when_true_activates_composite() -> None:
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: "prepared"))
     configure = Step(
         label="configure",
-        action=LeafAction(
-            fn=lambda ctx: ctx.require_value(
-                ParentGraphStepRef(step=probe, levels_up=1)
-            )
-        ),
+        action=LeafAction(fn=lambda: "configured"),
     )
     stage = Step(
         label="stage",
-        condition=runtime_condition(
-            inputs=(probe,),
-            when=lambda result: bool(result.unwrap()),
+        condition=(
+            stage_condition := runtime_condition(
+                when=lambda result: bool(result.unwrap()),
+            )
         ),
         action=Graph.from_wiring(label="stage", wiring=(configure.wire(),)),
     )
@@ -1654,7 +1658,7 @@ def test_compiled_runtime_when_true_activates_composite() -> None:
         label="root",
         wiring=(
             probe.wire(),
-            stage.wire(after=(probe,)),
+            stage.wire(after=(), inputs={stage_condition: (probe,)}),
         ),
     )
 
@@ -1670,7 +1674,7 @@ def test_compiled_runtime_when_true_activates_composite() -> None:
     assert state.entered_composites == {StepId((1,))}
     assert state.completed_composites == {StepId((1,))}
     assert state.results is not None
-    assert state.results.require(StepId((1, 0))).value == "prepared"
+    assert state.results.require(StepId((1, 0))).value == "configured"
 
 
 def test_graph_execution_run_logs_step_skip_by_condition(
@@ -1680,17 +1684,20 @@ def test_graph_execution_run_logs_step_skip_by_condition(
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: True))
     build = Step(
         label="build",
-        condition=runtime_condition(
-            inputs=(probe,),
-            when=lambda result: not bool(result.unwrap()),
+        condition=(
+            build_condition := runtime_condition(
+                when=lambda result: not bool(result.unwrap()),
+            )
         ),
-        action=LeafAction(fn=lambda _ctx: "built"),
+        action=LeafAction(fn=lambda _ctx, *_inputs: "built"),
     )
     graph = Graph.from_wiring(
         label="root",
         wiring=(
             probe.wire(),
-            build.wire(after=(probe,)),
+            build.wire(
+                after=(), inputs={build.action: (probe,), build_condition: (probe,)}
+            ),
         ),
     )
 
@@ -1708,17 +1715,20 @@ def test_graph_execution_run_writes_execution_render_to_run_log_dir(
     probe = Step(label="probe", action=LeafAction(fn=lambda _ctx: True))
     build = Step(
         label="build",
-        condition=runtime_condition(
-            inputs=(probe,),
-            when=lambda result: not bool(result.unwrap()),
+        condition=(
+            build_condition := runtime_condition(
+                when=lambda result: not bool(result.unwrap()),
+            )
         ),
-        action=LeafAction(fn=lambda _ctx: None),
+        action=LeafAction(fn=lambda _ctx, *_inputs: None),
     )
     graph = Graph.from_wiring(
         label="root",
         wiring=(
             probe.wire(),
-            build.wire(after=(probe,)),
+            build.wire(
+                after=(), inputs={build.action: (probe,), build_condition: (probe,)}
+            ),
         ),
     )
 
@@ -1731,4 +1741,7 @@ def test_graph_execution_run_writes_execution_render_to_run_log_dir(
     text = (tmp_path / "graph-execution.root.dynamic.tree").read_text(encoding="utf-8")
     assert "execution: root (mode=dynamic)" in text
     assert "probe [executed] [result=true]" in text
-    assert "build [condition=false] [skipped] [after: probe]" in text
+    assert (
+        "build [condition=false] [skipped] [after: probe (action input: 0), probe (condition input: 0)]"
+        in text
+    )

@@ -170,7 +170,7 @@ C（成功）→ D（继续执行）
 ```
 
 - Rust session 区分 `Finished`、`Skipped`、`Failed`、`Blocked`。失败不能伪装为成功或主动跳过。
-- 激活的条件依赖和 `RuntimeCondition.inputs` 传播失败；未激活的条件边不传播失败。
+- 激活的条件依赖和结果边传播失败；未激活的条件边不传播失败。
   条件函数自身抛错时，相关节点被阻断，不会读取缺失的 action 结果。
 - 已进入的子图让内部无关分支执行完，再汇总为失败；不会触发 `AFTER_SUCCESS`。
   依赖整个子图的节点被阻断。尚未进入就被阻断的子图，其全部后代也标记为 `blocked`。
@@ -274,16 +274,9 @@ Rust compiler 会转换所有声明期已知子图：
 运行期返回的 `Graph` 无法提前编译；返回后会以当前叶子路径为显式输入，建立一个
 嵌套 compilation 与 execution session。
 
-对子图中的 action 来说，runtime 当前还会显式补齐：
-
-- 当前图的 `graph_step_ids: Mapping[Step, StepId]`
-- 祖先图作用域链 `ancestor_graph_scopes`
-
-所以子图里既可以：
-
-- 读取当前图里的同级 step
-- 也可以通过 `ParentGraphStepRef(step=..., levels_up=...)`
-  显式读取外层图里的 step
+结果边在当前挂载内解析生产者身份。action 按参数顺序接收 Option，
+不再获取图作用域索引或任意结果查询上下文。返回动态子图的 action 可以将
+已经收到的值捕获到子图动作中，不隐式访问祖先图的结果存储。
 
 ## 多入口子图
 

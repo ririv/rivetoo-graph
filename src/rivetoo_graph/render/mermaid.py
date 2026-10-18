@@ -6,6 +6,7 @@ from ..errors import GraphError
 from ..model import (
     Graph,
     GraphMode,
+    ResultEdge,
     Step,
     StepId,
     resolve_step_label,
@@ -19,6 +20,7 @@ from .formatting import (
     render_compiled_step_label,
     render_step_label,
     render_step_path,
+    result_receiver_label,
 )
 
 
@@ -131,7 +133,11 @@ def append_graph_mermaid(
                 f'{indent}    {node_id}["{escape_label(render_step_label(step, step_id=step_id))}"]'
             )
     for edge in graph.edges:
-        if isinstance(edge, CapabilityBinding):
+        if isinstance(edge, ResultEdge):
+            lines.append(
+                f'{indent}    {node_ids[edge.source]} -->|"{escape_label(result_receiver_label(edge))} input {edge.argument_index}"| {node_ids[edge.target]}'
+            )
+        elif isinstance(edge, CapabilityBinding):
             lines.append(
                 f'{indent}    {node_ids[edge.source]} -->|"{escape_label(edge.capability.name)}"| {node_ids[edge.target]}'
             )

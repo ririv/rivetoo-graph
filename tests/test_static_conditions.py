@@ -11,6 +11,7 @@ from rivetoo_graph import (
     GraphError,
     GraphExecution,
     GraphMode,
+    ResultEdge,
     StaticCondition,
     StaticConditions,
     Step,
@@ -73,6 +74,27 @@ def test_static_scopes_compose_without_replacing_evaluators() -> None:
 
     assert len(compile_graph(graph, root_label="root").steps) == 1
     assert graph.steps == (left, right)
+
+
+def test_result_edge_static_rule_is_evaluated_once() -> None:
+    evaluated: list[StaticCondition] = []
+
+    def record(condition: StaticCondition) -> bool:
+        evaluated.append(condition)
+        return True
+
+    source = Step(lambda: 42)
+    consumer = Step(lambda _ctx, result: result.unwrap())
+    graph = Graph(
+        steps=(source, consumer),
+        edges=(ResultEdge(source, consumer, 0, receiver=consumer.action),),
+        static=StaticConditions(
+            evaluator=record, conditions={(source, consumer): ENABLED}
+        ),
+    )
+    compiled = compile_graph(graph, root_label="root")
+    assert compiled.steps[1].after
+    assert evaluated == [ENABLED]
 
 
 def test_inactive_subgraph_does_not_evaluate_nested_static_rules() -> None:
@@ -187,15 +209,21 @@ def test_static_pruning_does_not_silently_drop_required_capability() -> None:
 def test_static_pruning_does_not_leave_runtime_reads_without_a_source() -> None:
     probe = Step(lambda: True)
     consumer = Step(
-        lambda: None,
-        condition=runtime_condition(
-            inputs=(probe,), when=lambda result: bool(result.unwrap())
+        lambda _ctx, *_inputs: None,
+        condition=(
+            consumer_condition := runtime_condition(
+                when=lambda result: bool(result.unwrap())
+            )
         ),
     )
     graph = Graph(
         steps=(probe, consumer),
         static=StaticConditions(evaluator=evaluate, conditions={probe: DISABLED}),
+        edges=(
+            ResultEdge(probe, consumer, 0, receiver=consumer.action),
+            ResultEdge(probe, consumer, 0, receiver=consumer_condition),
+        ),
     )
 
-    with pytest.raises(GraphError, match="inactive"):
+    with pytest.raises(GraphError, match="result input was removed"):
         compile_graph(graph, root_label="root")

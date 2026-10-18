@@ -142,7 +142,7 @@ C (succeeded) → D (continues)
 The overall run still reports failure.
 
 - Finished, Skipped, Failed, and Blocked are distinct states.
-- Active conditional dependencies and condition inputs propagate failure;
+- Active conditional dependencies and result edges propagate failure;
   inactive conditional edges do not.
 - A predicate exception blocks affected nodes instead of reading missing results.
 - An entered subgraph lets unrelated internal branches finish, then reports
@@ -232,9 +232,10 @@ For a declared subgraph:
 Runtime-returned graphs cannot be compiled ahead of time. They receive a nested
 compilation/session rooted at the current leaf path.
 
-Actions receive the current `graph_step_ids: Mapping[Step, StepId]` and
-`ancestor_graph_scopes`. Sibling results use Step references; ancestor results
-use explicit `ParentGraphStepRef(step=..., levels_up=...)`.
+Result edges resolve producer identities inside the current mount. Actions receive
+their ordered Option inputs, not graph scope indexes or a result query context.
+An action returning a child graph can capture these received values in its child
+actions. There is no implicit lookup into an ancestor graph's result store.
 
 Multiple structural entry nodes are legal. They may all become ready, but readiness
 does not imply simultaneous execution.

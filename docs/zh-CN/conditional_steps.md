@@ -23,10 +23,10 @@ label 只用于展示。condition 接受 `RuntimeCondition | None`，不接受 b
 ```python
 probe = Step(lambda: 42)
 condition = runtime_condition(
-    inputs=(probe,),
     when=lambda result: result.unwrap() == 42,
 )
-build = Step(build_source, condition=condition)
+build = Step(lambda ctx, result: build_source(), condition=condition)
+graph = Graph.from_wiring((probe.wire(), build.wire(inputs={condition: (probe,), build.action: (probe,)})))
 ```
 
 子图挂载同样使用 `child_graph.step(condition=condition)`。
@@ -114,7 +114,7 @@ observation 与 condition。激活后才释放直接子节点；空 composite �
 
 ## inputs 与执行前置
 
-inputs 决定“判断节点是否启用需要的结果”，after 决定“启用后执行 action 必须等待谁”。
+Step.wire(inputs=...) 将各声明对象分别绑定到自己的结果来源。节点条件只等待自己的输入；节点启用后，action 才等待自己的输入以及 after 所指定的前置步骤。
 inputs 必须引用当前图中的 Step，并参与 DAG 校验。
 
 ```python
@@ -122,19 +122,21 @@ probe = Step(probe_cache, label="probe")
 prepare_a = Step(prepare_a_source, label="prepare_a")
 prepare_b = Step(prepare_b_source, label="prepare_b")
 heavy_build = Step(
-    build_source,
+    lambda ctx, result: build_source(),
     label="heavy_build",
-    condition=runtime_condition(
-        inputs=(probe,),
+    condition=(cache_condition := runtime_condition(
         when=lambda result: bool(result.unwrap()),
-    ),
+    )),
 )
 graph = Graph.from_wiring(
     wiring=(
         probe.wire(),
         prepare_a.wire(),
         prepare_b.wire(),
-        heavy_build.wire(after=(prepare_a, prepare_b)),
+        heavy_build.wire(
+            after=(prepare_a, prepare_b),
+            inputs={cache_condition: (probe,), heavy_build.action: (probe,)},
+        ),
     )
 )
 ```
@@ -159,7 +161,19 @@ approval_step = Step(lambda: True)
 def should_run(count: Option[object], approval: Option[object]) -> bool:
     return count.unwrap() == 42 and approval.unwrap_or(False) is True
 
-condition = runtime_condition(inputs=(count_step, approval_step), when=should_run)
+condition = runtime_condition(when=should_run)
+consumer = Step(
+    lambda ctx, count, approval: print(count.unwrap(), approval.unwrap()),
+    condition=condition,
+)
+graph = Graph.from_wiring((
+    count_step.wire(),
+    approval_step.wire(),
+    consumer.wire(inputs={
+        condition: (count_step, approval_step),
+        consumer.action: (count_step, approval_step),
+    }),
+))
 ```
 
 两个步骤成功执行后，条件函数分别收到 `Some(42)` 和 `Some(True)`。
@@ -181,11 +195,12 @@ condition = runtime_condition(inputs=(count_step, approval_step), when=should_ru
 
 inputs 引用当前图中的 Step；同一子图挂载两次，各自读取自己挂载中的结果。
 被静态裁剪的输入是编译错误，不是 Nothing。输入的顺序和重复项均保留，
-`inputs=(probe, probe)` 会传两个参数，但等待的是同一个生产者。
+`inputs={condition: (probe, probe)}` 会传两个参数，但等待的是同一个生产者。
 
 当前 Step 不是泛型，条件参数应标为 `Option[object]`，按需校验或收窄原值类型。
-类型标注不会切换调用约定。普通 action 仍使用上下文查询结果；成功结果的包装
-统一为 Some，不叠加第二层包装。
+类型标注不会切换调用约定。action 接收 ctx 和属于自己的 Option 输入；ctx 不再
+查询结果。每个条件只等待自己绑定的来源。节点条件为假时，不必等待 action 或条件边
+的输入即可跳过目标；独立的生产者不会因此自动取消。
 
 ## 边界
 

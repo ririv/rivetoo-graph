@@ -26,10 +26,10 @@ Inside `runtime_condition`, `when` is the function deciding whether it holds:
 ```python
 probe = Step(lambda: 42)
 condition = runtime_condition(
-    inputs=(probe,),
     when=lambda result: result.unwrap() == 42,
 )
-build = Step(build_source, condition=condition)
+build = Step(lambda ctx, result: build_source(), condition=condition)
+graph = Graph.from_wiring((probe.wire(), build.wire(inputs={condition: (probe,), build.action: (probe,)})))
 ```
 
 `child_graph.step(condition=condition)` uses the same spelling for a subgraph mount.
@@ -131,8 +131,7 @@ still retain their dependency boundary.
 
 ## Inputs versus action prerequisites
 
-RuntimeCondition.inputs names the results needed to decide whether the Step is
-enabled. Ordinary after prerequisites constrain execution only if it is enabled.
+Step.wire(inputs=...) maps each existing receiver object to its own result sources. Node conditions wait only for their bound results. Action inputs and ordinary after prerequisites constrain execution after the node is enabled.
 Inputs must refer to Steps in the current graph and participate in DAG validation.
 
 ```python
@@ -140,19 +139,21 @@ probe = Step(probe_cache, label="probe")
 prepare_a = Step(prepare_a_source, label="prepare_a")
 prepare_b = Step(prepare_b_source, label="prepare_b")
 heavy_build = Step(
-    build_source,
+    lambda ctx, result: build_source(),
     label="heavy_build",
-    condition=runtime_condition(
-        inputs=(probe,),
+    condition=(cache_condition := runtime_condition(
         when=lambda result: bool(result.unwrap()),
-    ),
+    )),
 )
 graph = Graph.from_wiring(
     wiring=(
         probe.wire(),
         prepare_a.wire(),
         prepare_b.wire(),
-        heavy_build.wire(after=(prepare_a, prepare_b)),
+        heavy_build.wire(
+            after=(prepare_a, prepare_b),
+            inputs={cache_condition: (probe,), heavy_build.action: (probe,)},
+        ),
     )
 )
 ```
@@ -184,7 +185,19 @@ approval_step = Step(lambda: True)
 def should_run(count: Option[object], approval: Option[object]) -> bool:
     return count.unwrap() == 42 and approval.unwrap_or(False) is True
 
-condition = runtime_condition(inputs=(count_step, approval_step), when=should_run)
+condition = runtime_condition(when=should_run)
+consumer = Step(
+    lambda ctx, count, approval: print(count.unwrap(), approval.unwrap()),
+    condition=condition,
+)
+graph = Graph.from_wiring((
+    count_step.wire(),
+    approval_step.wire(),
+    consumer.wire(inputs={
+        condition: (count_step, approval_step),
+        consumer.action: (count_step, approval_step),
+    }),
+))
 ```
 
 When both Steps execute successfully, the predicate receives `Some(42)` and
@@ -209,13 +222,15 @@ Graphs without inputs retain optional result recording.
 Inputs reference Steps in the current graph. Reusing that graph under two parents
 binds each input to its own mount, not to another execution of the same declaration.
 Static pruning of an input is a compilation error, not Nothing.
-Input order and duplicates are preserved, so `inputs=(probe, probe)` supplies two
+Input order and duplicates are preserved, so `inputs={condition: (probe, probe)}` supplies two
 arguments even though they wait for the same producer.
 
 Step is not generic today: annotations should use `Option[object]`, then validate or
 narrow the payload as needed. An annotation does not select a different calling
-convention. Ordinary action contexts keep their result lookup APIs; their successful
-result wrapper is also Some, so values are not wrapped twice.
+convention. Actions receive ctx followed by their own ordered Option inputs; ctx has
+no result lookup API. Each condition waits only for its bound sources. A false node
+condition skips the target without waiting for action inputs or conditional-edge
+inputs. Producers are independent Steps and are not cancelled by that skip.
 
 ## Boundaries
 

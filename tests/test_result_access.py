@@ -3,12 +3,14 @@ from __future__ import annotations
 import pytest
 
 from rivetoo_graph import (
+    Graph,
     GraphExecution,
     GraphExecutionState,
     GraphObservationEvent,
     GraphObservationMessages,
     GraphResultStore,
     GraphResultView,
+    Option,
     Step,
     StepId,
     StepRunContext,
@@ -54,15 +56,13 @@ def test_state_snapshot_keeps_its_result_records() -> None:
     assert state.results.has(second)
 
 
-def test_actions_and_observers_receive_the_same_read_only_view() -> None:
+def test_actions_receive_bound_results_and_observers_receive_read_only_view() -> None:
     state = GraphExecutionState(results=GraphResultStore())
     received: list[GraphResultView] = []
     prepare = Step(lambda: "source")
 
-    def consume(ctx: StepRunContext) -> str:
-        assert isinstance(ctx.results, GraphResultView)
-        received.append(ctx.results)
-        assert ctx.require_value(prepare) == "source"
+    def consume(_ctx: StepRunContext, source: Option[object]) -> str:
+        assert source.unwrap() == "source"
         return "output"
 
     finish = Step(consume)
@@ -76,12 +76,13 @@ def test_actions_and_observers_receive_the_same_read_only_view() -> None:
             assert result.value == "output"
 
     execution = GraphExecution(
-        graph=(prepare >> finish).graph(
+        graph=Graph.from_wiring(
+            (prepare.wire(), finish.wire(inputs={finish.action: (prepare,)})),
             observation=GraphObservationMessages(after_success="done"),
         ),
         execution_state=state,
     )
     execution.run(ThreadGraphRunOptions(workers=2, observer=Observer()))
-    assert len(received) == 2
+    assert len(received) == 1
     assert all(view is state.results for view in received)
     assert execution.require_result(finish).value == "output"

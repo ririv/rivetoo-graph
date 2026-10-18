@@ -38,11 +38,10 @@ Python 的 `DirectedTopology` 并不是 Rust topology 的逐方法 FFI 包装。
 这里定义：
 
 - V：本层 Graph 的 Step 数量。
-- E：本层显式边数量。
-- B：条件边和 `Step.condition` 中所有 `RuntimeCondition.inputs` 引用总数。
-- A：去重后的本层阻塞 arc 数量，A ≤ E + B。
+- E：本层显式普通边、条件边、结果边数量。
+- A：去重后的本层阻塞 arc 数量，A ≤ E。
 
-本层阻塞关系来自普通边、条件边的来源节点和运行时条件的读取依赖。
+本层阻塞关系统一来自显式边；条件不再单独声明来源。
 条件边在声明时保守参与无环校验，即使其静态条件在随后编译时为假。
 `inputs` 的遍历来自显式数据依赖，不是拓扑排序额外制造的业务关系。
 
@@ -51,7 +50,7 @@ Python 的 `DirectedTopology` 并不是 Rust topology 的逐方法 FFI 包装。
 ```text
 验证 Step 并分配本层整数索引
     ↓
-_validated_blocking_arcs：遍历边与 inputs，去重并生成 Arc
+_validated_blocking_arcs：遍历显式边，去重并生成 Arc
     ↓
 物化 blocking_arcs 元组
     ↓
@@ -62,10 +61,9 @@ Rust dag_cycle：创建拓扑索引并检测环
 
 这里确实存在 Arc 元组和整数端点列表，不是“生成一条关系就直接写入 Rust 索引”的
 零中间集合实现。关系投影、转换、索引构造和环检测各自进行线性处理，总时间仍为
-O(V + E + B)，峰值辅助空间为 O(V + A)。多个中间表示增加常数成本，不改变渐进阶。
+O(V + E)，峰值辅助空间为 O(V + A)。多个中间表示增加常数成本，不改变渐进阶。
 
-B = 0 时，总时间为 O(V + E)。这也适用于不读取 Step 结果的运行时条件，
-不能简单把所有运行时条件都视为增加一个 V 倍的循环。
+结果绑定的参数槽位校验另用 O(V + E) 时间；callable 签名绑定成本还取决于参数数量。
 
 StaticConditions 额外声明 S 条节点或边规则。存在规则组时，成员校验与查询索引的
 时间、空间为 O(V + E + S)，不包含 predicate 求值成本。没有规则组时，此路径为 O(1)，
@@ -141,11 +139,10 @@ Python 结果物化，不包含 Graph 构造、每轮计时前的 GC，也不执
 
 一次边界计算读取：
 
-- 显式普通边与条件边；
-- 条件边和 Step 的运行时条件 inputs；
+- 显式普通边、条件边与结果边；
 - 本层 Step 顺序，用于返回有序边界。
 
-时间为 O(V + E + B)，辅助空间为 O(V)。`entries` 与 `exits` 是独立属性，
+时间为 O(V + E)，辅助空间为 O(V)。`entries` 与 `exits` 是独立属性，
 分别读取会分别计算；串行 DSL 通常读取左侧 exits 和右侧 entries。
 声明对象当前没有为此维护可变缓存。
 

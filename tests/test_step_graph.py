@@ -7,6 +7,7 @@ from rivetoo_graph import (
     GraphError,
     GraphWiring,
     LeafAction,
+    ResultEdge,
     Step,
     StepRunContext,
     StepWiring,
@@ -173,18 +174,25 @@ def test_graph_wiring_preserves_independent_branches() -> None:
     )
 
 
-def test_runtime_condition_reads_define_wiring_boundaries() -> None:
+def test_result_edges_define_wiring_boundaries() -> None:
     probe = Step(label="probe", action=LeafAction(fn=_noop))
     conditional = Step(
         label="conditional",
         action=LeafAction(fn=_noop),
-        condition=runtime_condition(
-            inputs=(probe,),
-            when=lambda result: bool(result.unwrap()),
+        condition=(
+            conditional_condition := runtime_condition(
+                when=lambda result: bool(result.unwrap()),
+            )
         ),
     )
 
-    wiring = GraphWiring(steps=(probe, conditional))
+    wiring = GraphWiring(
+        steps=(probe, conditional),
+        edges=(
+            ResultEdge(probe, conditional, 0, receiver=conditional.action),
+            ResultEdge(probe, conditional, 0, receiver=conditional_condition),
+        ),
+    )
 
     assert wiring.entries == (probe,)
     assert wiring.exits == (conditional,)

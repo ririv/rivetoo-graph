@@ -108,6 +108,7 @@ class CompiledStep:
     condition: CompiledRuntimeCondition | None
     owner: CompiledCompositeRef | None
     context: CompiledStepContext
+    inputs: tuple[CompiledNodeRef, ...] = ()
 
     @property
     def id(self) -> StepId:
@@ -488,6 +489,10 @@ def _validate_compiled_node(
             _validate_compiled_condition(nodes, prerequisite.condition)
     if node.condition is not None:
         _validate_compiled_condition(nodes, node.condition)
+    if isinstance(node, CompiledStep):
+        node.action.validate_inputs(len(node.inputs))
+        for ref in node.inputs:
+            _require_compiled_node(nodes, ref)
 
 
 def _validate_compiled_condition(
@@ -547,6 +552,10 @@ def _materialize_native_execution_graph(
                 for prerequisite in node.after
             ]
         )
+        if isinstance(node, CompiledStep):
+            prerequisites[-1].extend(
+                (node_indexes[ref.id], None) for ref in node.inputs
+            )
         node_conditions.append(
             None if node.condition is None else register_condition(node.condition)
         )
@@ -683,6 +692,7 @@ def _materialize_native_compilation(
     )
     native_after = native.graph.all_prerequisites()
     native_conditions = native.graph.node_conditions()
+    node_inputs = native.node_inputs()
 
     def prerequisite(value: tuple[int, int | None]) -> CompiledPrerequisite:
         node, condition = value
@@ -741,6 +751,10 @@ def _materialize_native_compilation(
                     condition=condition,
                     owner=owner,
                     context=context,
+                    inputs=tuple(
+                        refs_by_declaration[node]
+                        for node in node_inputs[compiled_index]
+                    ),
                 )
             steps.append(compiled_step)
             ordered_nodes.append(compiled_step)

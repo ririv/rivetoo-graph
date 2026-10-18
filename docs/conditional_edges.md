@@ -137,10 +137,9 @@ other Step result. In [model.py](../src/rivetoo_graph/model.py), they contain:
 ```python
 class RuntimeCondition:
     when: ConditionalEdgePredicate
-    inputs: tuple[Step, ...] = ()
 ```
 
-The predicate receives one `Option[object]` per declared input, in tuple order.
+The predicate receives one `Option[object]` per target wiring input, in tuple order.
 Graph resolves the results in the current mount; no context lookup is required.
 See [result inputs](./conditional_steps.md#result-inputs) for absence and unwrapping.
 
@@ -149,69 +148,48 @@ If it is true but the source prerequisite is not yet complete, subsequent schedu
 waits without rerunning the predicate. Reusing one Python RuntimeCondition or
 callable at several sites does not deduplicate those evaluations.
 
-## Why inputs is not after
+## Inputs and ordering prerequisites
 
-- An ordinary `after` prerequisite says what the target action must wait for.
-- A condition's `inputs` says what is needed to determine whether a particular
-  conditional dependency exists.
-
-The condition must be evaluated before deciding whether its source is required.
-A Step can have several conditional edges, each reading different results.
-
-### One conditional dependency
-
-Suppose build always waits for a cache probe and only waits for configure on a miss:
+Inputs map existing receiver objects to their sources. Action, node condition and each conditional-edge condition have independent arguments. After only declares ordering.
 
 ```python
-compile_cache_probe = Step(probe_cache, label="compile_cache_probe")
-configure = Step(configure_source, label="configure")
-build = Step(build_source, label="build")
+permission = Step(lambda: True)
+design = Step(lambda: "implement login")
+environment_check = Step(lambda: True)
+prepare = Step(lambda: print("prepare environment"))
 
-graph = Graph.from_wiring(
-    wiring=(
-        compile_cache_probe.wire(),
-        configure.wire(),
-        build.wire(
-            after=(
-                compile_cache_probe,
-                ConditionalPrerequisite(
-                    configure,
-                    condition=runtime_condition(
-                        when=cache_miss,
-                        inputs=(compile_cache_probe,),
-                    ),
-                ),
-            )
-        ),
-    )
+allowed = runtime_condition(
+    when=lambda result: result.is_some() and result.unwrap() is True,
 )
+prepare_dependency = ConditionalPrerequisite(
+    prepare,
+    condition=runtime_condition(
+        when=lambda result: result.is_some() and result.unwrap() is True,
+    ),
+)
+implementation = Step(
+    lambda ctx, plan: print(plan.unwrap()),
+    condition=allowed,
+)
+graph = Graph.from_wiring((
+    permission.wire(),
+    design.wire(),
+    environment_check.wire(),
+    prepare.wire(),
+    implementation.wire(
+        after=(prepare_dependency,),
+        inputs={
+            implementation.action: (design,),
+            allowed: (permission,),
+            prepare_dependency.condition: (environment_check,),
+        },
+    ),
+))
 ```
 
-The direct probe prerequisite expresses action ordering; inputs expresses predicate
-inputs. Since inputs already blocks the target until evaluation, repeating the same
-ordinary prerequisite is unnecessary unless it serves an independently intended
-constraint. Neither dependency disables configure itself.
+The node condition reads permission, the edge condition reads environment_check, and the action reads design. False permission skips implementation; a false edge condition only stops waiting for prepare, without skipping implementation or cancelling prepare. No extra LeafAction wrapper is needed for inline lambdas.
 
-### Several conditional dependencies
-
-```python
-build.wire(
-    after=(
-        ConditionalPrerequisite(
-            configure,
-            condition=runtime_condition(when=config_miss, inputs=(probe_config,)),
-        ),
-        ConditionalPrerequisite(
-            prepare_assets,
-            condition=runtime_condition(when=assets_missing, inputs=(probe_assets,)),
-        ),
-    )
-)
-```
-
-One predicate inputs probe_config and the other inputs probe_assets. A flat after
-list cannot describe which result belongs to which condition. Both inputs sets
-participate in cycle detection and scheduling.
+A receiver uses object identity. Reusing the same RuntimeCondition in two prerequisites shares the binding, not the evaluation instance. Separate objects wrapping the same function can bind different inputs.
 
 ## Runtime and compilation boundary
 

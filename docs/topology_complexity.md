@@ -44,12 +44,10 @@ the ordering.
 For one Graph level, let:
 
 - V be its Step count.
-- E be its explicit edge count.
-- B count all RuntimeCondition.inputs references on edges and Steps.
-- A be the deduplicated local blocking-arc count, with A ≤ E + B.
+- E be its ordinary, conditional and result edge count.
+- A be the deduplicated local blocking-arc count, with A ≤ E.
 
-Blocking relations come from ordinary edges, conditional-edge sources, and runtime
-reads. Conditional edges conservatively participate in declaration-time cycle
+Blocking relations come exclusively from explicit edges. Conditional edges conservatively participate in declaration-time cycle
 checks even if their static conditions later evaluate to false.
 Reads is an explicit data dependency, not a relation invented by topological sorting.
 
@@ -58,7 +56,7 @@ The actual [model.py](../src/rivetoo_graph/model.py) path is:
 ```text
 Validate Steps and assign local integer indexes
     ↓
-_validated_blocking_arcs: traverse edges/inputs and deduplicate Arc values
+_validated_blocking_arcs: traverse edges and deduplicate Arc values
     ↓
 Materialize a blocking_arcs tuple
     ↓
@@ -69,12 +67,12 @@ Rust dag_cycle: construct indexes and detect cycles
 
 The Arc tuple and integer-pair list are real intermediate allocations; this is not
 a zero-intermediate streaming path directly into Rust. Projection, conversion,
-indexing, and cycle detection each do linear work. Total time is O(V + E + B);
+indexing, and cycle detection each do linear work. Total time is O(V + E);
 peak auxiliary space is O(V + A). Multiple representations add constant costs
 without changing the asymptotic bound.
 
-With B = 0, time is O(V + E), including runtime conditions that read no results.
-Runtime conditions do not inherently add another V-sized loop.
+Result argument slot validation is also O(V + E). Callable signature validation
+additionally depends on the number of parameters.
 
 StaticConditions adds S explicit node/edge rules. When present, their membership
 validation and lookup index cost O(V + E + S) time and space, independently of
@@ -160,8 +158,8 @@ graph: every timed invocation recompiles it.
 GraphWiring.entries and exits are structural DSL boundaries, not named capability
 ports or a separately stored topology.
 
-Each calculation reads explicit ordinary/conditional edges, runtime inputs, and the
-Step order used to return deterministic boundaries. Time is O(V + E + B) and
+Each calculation reads explicit ordinary, conditional and result edges, and the
+Step order used to return deterministic boundaries. Time is O(V + E) and
 auxiliary space O(V).
 
 Entries and exits are independent properties, so reading both calculates both.

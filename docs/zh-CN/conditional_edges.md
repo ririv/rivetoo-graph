@@ -119,11 +119,10 @@ checks 和 build 都仍然存在。组合多个 StaticConditions 时，每条规
 ```python
 class RuntimeCondition:
     when: ConditionalEdgePredicate
-    inputs: tuple[Step, ...] = ()
 ```
 
-predicate 按 inputs 元组的顺序接收各个 `Option[object]`。框架在当前挂载中读取
-结果，不再传入 StepReadContext，也不需要重复写 Step 查询结果。
+predicate 按目标接线 inputs 的顺序接收各个 `Option[object]`。框架在当前挂载中读取
+结果，不需要查询上下文。
 缺失与解包规则见[结果输入](./conditional_steps.md#结果输入)。
 
 每个编译条件实例在当前 session 中最多求值一次。条件为真但来源尚未完成时，
@@ -132,61 +131,46 @@ predicate 按 inputs 元组的顺序接收各个 `Option[object]`。框架在当
 
 ## inputs 与 after
 
-- 普通 after 表达目标 action 必须等待谁。
-- 条件的 inputs 表达判断这条依赖是否成立前，需要读取谁。
-
-一个 Step 可以有多个条件边，各自读取不同结果，因此不能只用一份 after 代替 inputs。
-
-### 一个条件依赖
-
-build 等待缓存探测，并仅在 miss 时等待 configure：
+inputs 将现有声明对象绑定到各自来源，action、节点条件和每条条件边分别接收自己的参数。after 只表达执行顺序。
 
 ```python
-compile_cache_probe = Step(probe_cache, label="compile_cache_probe")
-configure = Step(configure_source, label="configure")
-build = Step(build_source, label="build")
+permission = Step(lambda: True)
+design = Step(lambda: "implement login")
+environment_check = Step(lambda: True)
+prepare = Step(lambda: print("prepare environment"))
 
-graph = Graph.from_wiring(
-    wiring=(
-        compile_cache_probe.wire(),
-        configure.wire(),
-        build.wire(
-            after=(
-                compile_cache_probe,
-                ConditionalPrerequisite(
-                    configure,
-                    condition=runtime_condition(
-                        when=cache_miss,
-                        inputs=(compile_cache_probe,),
-                    ),
-                ),
-            )
-        ),
-    )
+allowed = runtime_condition(
+    when=lambda result: result.is_some() and result.unwrap() is True,
 )
+prepare_dependency = ConditionalPrerequisite(
+    prepare,
+    condition=runtime_condition(
+        when=lambda result: result.is_some() and result.unwrap() is True,
+    ),
+)
+implementation = Step(
+    lambda ctx, plan: print(plan.unwrap()),
+    condition=allowed,
+)
+graph = Graph.from_wiring((
+    permission.wire(),
+    design.wire(),
+    environment_check.wire(),
+    prepare.wire(),
+    implementation.wire(
+        after=(prepare_dependency,),
+        inputs={
+            implementation.action: (design,),
+            allowed: (permission,),
+            prepare_dependency.condition: (environment_check,),
+        },
+    ),
+))
 ```
 
-普通 probe 前置表达 action 顺序，inputs 表达 predicate 输入。inputs 本身已阻塞目标，
-所以若没有独立的顺序意图，不必在普通 after 中重复 probe。这些边都不会禁用 configure。
+节点条件读取 permission，条件边读取 environment_check，action 读取 design。节点条件为假时跳过 implementation；条件边为假仅取消等待 prepare，不跳过 implementation，也不取消 prepare。匿名函数不需要额外手动包装成 LeafAction。
 
-### 多个条件依赖
-
-```python
-build.wire(
-    after=(
-        ConditionalPrerequisite(
-            configure,
-            condition=runtime_condition(when=config_miss, inputs=(probe_config,)),
-        ),
-        ConditionalPrerequisite(
-            prepare_assets,
-            condition=runtime_condition(when=assets_missing, inputs=(probe_assets,)),
-        ),
-    )
-)
-```
-
-两个 predicate 分别读取 probe_config 和 probe_assets，两份 inputs 都参与环检测与调度。
+绑定按对象身份区分。同一 RuntimeCondition 用于两条前置边时共享绑定，但不合并求值实例；包装相同函数的两个独立条件对象可以绑定不同来源。
 
 ## 编译与执行边界
 

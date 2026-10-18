@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable
 
     from ..model import LeafAction
+    from ..option import Option
     from ..results import GraphResultView, StepRunContext
     from .action_log import GraphActionLog
     from .run import CompiledGraphRun
@@ -37,12 +38,15 @@ async def _await_result(result: Awaitable[object]) -> object:
 
 
 def invoke_sync_action(
-    action: LeafAction, ctx: StepRunContext, action_log: GraphActionLog
+    action: LeafAction,
+    ctx: StepRunContext,
+    action_log: GraphActionLog,
+    inputs: tuple[Option[object], ...] = (),
 ) -> object:
     if ctx.step_log_path is None:
-        return resolve_action_result(action.invoke(ctx))
+        return resolve_action_result(action.invoke(ctx, inputs))
     with action_log.scope(ctx.step_log_path):
-        return resolve_action_result(action.invoke(ctx))
+        return resolve_action_result(action.invoke(ctx, inputs))
 
 
 def as_graph_result(

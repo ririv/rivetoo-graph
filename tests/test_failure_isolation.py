@@ -17,6 +17,7 @@ from rivetoo_graph import (
     GraphExecutionState,
     GraphExecutionStopped,
     GraphNodeFailure,
+    ResultEdge,
     SerialGraphExecutor,
     Step,
     StepId,
@@ -131,12 +132,20 @@ def test_condition_does_not_read_failed_action_result(execute):
     graph = Graph(
         steps=(
             producer,
-            Step(
-                lambda: None,
-                condition=runtime_condition(when=needs_result, inputs=(producer,)),
+            (
+                consumer_134 := Step(
+                    lambda _ctx, *_inputs: None,
+                    condition=(
+                        needs_result_condition := runtime_condition(when=needs_result)
+                    ),
+                )
             ),
             Step(lambda: calls.append("good")),
-        )
+        ),
+        edges=(
+            ResultEdge(producer, consumer_134, 0, receiver=consumer_134.action),
+            ResultEdge(producer, consumer_134, 0, receiver=needs_result_condition),
+        ),
     )
     state = GraphExecutionState()
     with pytest.raises(RuntimeError, match="action failed"):
@@ -334,10 +343,17 @@ def test_cancellation_from_condition_waits_for_started_async_action():
         steps=(
             Step(survive),
             ready,
-            Step(
-                lambda: None, condition=runtime_condition(when=cancel, inputs=(ready,))
+            (
+                consumer_337 := Step(
+                    lambda _ctx, *_inputs: None,
+                    condition=(cancel_condition := runtime_condition(when=cancel)),
+                )
             ),
-        )
+        ),
+        edges=(
+            ResultEdge(ready, consumer_337, 0, receiver=consumer_337.action),
+            ResultEdge(ready, consumer_337, 0, receiver=cancel_condition),
+        ),
     )
     plan = GraphExecution(graph=graph, execution_control=control)
     with pytest.raises(GraphExecutionStopped):

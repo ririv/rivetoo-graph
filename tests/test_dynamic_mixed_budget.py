@@ -16,6 +16,7 @@ from rivetoo_graph import (
     GraphExecution,
     GraphExecutionState,
     GraphResultStore,
+    Option,
     Step,
     StepExecutionEvent,
     StepExecutionPhase,
@@ -95,8 +96,8 @@ def test_runtime_child_preserves_capability_ports_and_ancestor_results(
     prepared = Step(lambda: "prepared", label="prepared")
     capability = Capability("ready")
 
-    def expand(ctx: StepRunContext) -> Graph:
-        source = ctx.require_value(prepared)
+    def expand(_ctx: StepRunContext, result: Option[object]) -> Graph:
+        source = result.unwrap()
         ready = Step(lambda: calls.append(source), label="ready")
         provider = Graph(
             steps=(ready,),
@@ -120,7 +121,14 @@ def test_runtime_child_preserves_capability_ports_and_ancestor_results(
             ),
         )
 
-    graph = (prepared >> Step(expand, label="expand")).graph()
+    graph = Graph.from_wiring(
+        (
+            prepared.wire(),
+            (input_step_125 := Step(expand, label="expand")).wire(
+                inputs={input_step_125.action: (prepared,)}
+            ),
+        )
+    )
     GraphExecution(
         graph, execution_state=GraphExecutionState(results=GraphResultStore())
     ).run(

@@ -11,6 +11,7 @@ from typing import Literal
 
 from rivetoo_graph import (
     Graph,
+    ResultEdge,
     StaticCondition,
     StaticConditions,
     Step,
@@ -36,9 +37,9 @@ def declaration(case: Case, recipes: int, steps: int) -> Graph:
             leaves = (
                 leaves[0],
                 Step(
-                    noop,
-                    condition=runtime_condition(
-                        inputs=(leaves[0],), when=lambda _ctx: True
+                    lambda _ctx, _result: None,
+                    condition=(
+                        condition := runtime_condition(when=lambda _result: True)
                     ),
                 ),
                 *leaves[2:],
@@ -46,8 +47,18 @@ def declaration(case: Case, recipes: int, steps: int) -> Graph:
         child = Graph(
             steps=leaves,
             edges=tuple(
-                UnconditionalEdge(left, right)
-                for left, right in zip(leaves, leaves[1:], strict=False)
+                edge
+                for index, (left, right) in enumerate(
+                    zip(leaves, leaves[1:], strict=False)
+                )
+                for edge in (
+                    (
+                        ResultEdge(left, right, 0, receiver=right.action),
+                        ResultEdge(left, right, 0, receiver=condition),
+                    )
+                    if case == "runtime" and index == 0
+                    else (UnconditionalEdge(left, right),)
+                )
             ),
         )
         children.append(child.step())

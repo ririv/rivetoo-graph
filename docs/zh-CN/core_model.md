@@ -59,8 +59,8 @@ GraphExecutionState
 - Graph 显式声明 label 时，该值优先
 
 显式接线只保存在 `Graph.edges` 中。规范化后的 `Graph` 不接受 `StepWiring`，
-Step 本身不保存 `after`。运行时条件的 `inputs` 是另一类显式阻塞关系，同样参与
-校验与调度，不能忽略。
+Step 本身不保存 `after` 或 `inputs`。ResultEdge 承载数据绑定，条件中不再另存
+一份依赖关系；所有阻塞关系均来自图的接线。
 
 ## `Step`
 
@@ -88,7 +88,7 @@ runtime 消费三种 action：
 
 - 同一个 Step 不能在同一张 Graph 中挂载两次
 - 同一个 Step 可以在不同 Graph 中使用不同接线
-- 普通边与条件 `inputs` 的跨图引用会在 Graph 构造时失败；跨子图同步使用能力端口
+- 普通边与结果输入的跨图引用会在 Graph 构造时失败；跨子图同步使用能力端口
 
 ## 身份与展示
 
@@ -120,13 +120,15 @@ type GraphEdge = (
     UnconditionalEdge
     | ConditionalEdge
     | CapabilityBinding
+    | ResultEdge
 )
 ```
 
-两种边都引用真实 Step 对象：
+这些边引用真实 Step 对象：
 
 - `UnconditionalEdge(source, target)`
 - `ConditionalEdge(source, target, condition)`
+- `ResultEdge(source, target, argument_index, receiver)`：同时声明等待关系与结果参数位置
 
 作者通常不需要直接构造边，可以使用 `Step.wire(...)`：
 
@@ -245,51 +247,28 @@ selected_graph = select_one(
 
 ## `LeafAction`
 
-`LeafAction` 只接受两种 callable：
+没有结果输入时，调用 `fn()` 或 `fn(ctx)`。两种形式都有效时固定使用零参，
+保留 `lambda value=value: ...` 这种闭包默认值。
+
+通过 `wire(inputs={consumer.action: (producer, ...)})` 接入结果后，固定调用
+`fn(ctx, first_result, ...)`。每个结果是 `Option[object]`，构图时校验完整签名，
+不根据参数名或类型标注猜测调用方式。
 
 ```python
-Callable[[], object]
-Callable[[StepRunContext], object]
+def compile_action(ctx: StepRunContext, source: Option[object]) -> None:
+    ctx.control.require_running()
+    compile_source(source.unwrap())
+
+prepare = Step(prepare_source)
+compile_step = Step(compile_action)
+graph = Graph.from_wiring((
+    prepare.wire(),
+    compile_step.wire(inputs={compile_step.action: (prepare,)}),
+))
 ```
 
-它在构造时检查签名并固定调用分支，runtime 不再猜测或转换参数：
-
-- 零参数 action 调用 `fn()`
-- 上下文 action 调用 `fn(run_ctx)`
-
-业务参数由闭包绑定：
-
-```python
-Step(
-    lambda: generate_pkg_config_file(layout, version),
-    label="pkgconfig",
-)
-```
-
-同时需要业务参数和运行上下文时，业务参数仍由闭包捕获，唯一显式形参留给
-`StepRunContext`：
-
-```python
-Step(
-    lambda run_ctx: compile_source(
-        compiler,
-        run_ctx.require_value(prepare),
-    ),
-    label="compile",
-)
-```
-
-若 callable 同时支持零参数和单参数调用，固定按零参数调用。这样
-`lambda value=value: ...` 的默认参数不会被运行上下文覆盖。
-
-`step(action)` 是轻量声明入口：
-
-- 普通函数使用函数名作为 label
-- `LeafAction` 使用其函数名作为 label
-- Graph 使用 `Graph.label`
-- lambda 或无名 callable 保持无 label
-
-它不绑定业务参数，也不提供另一套运行协议。
+`step(action)` 从具名函数或 Graph 名称推导 label，不绑定业务参数，
+也不引入第二套执行协议。
 
 ## 运行时返回子图
 
@@ -297,9 +276,11 @@ LeafAction 可以在运行时返回 Graph。runtime 会把返回值作为当前 
 编译成嵌套 execution session，交给本次执行的同一个驱动调度：
 
 ```python
-def select_graph(run_ctx: StepRunContext) -> Graph:
-    selected = run_ctx.require_value(select_strategy)
-    return graph_for(selected)
+def select_graph(ctx: StepRunContext, selected: Option[object]) -> Graph:
+    return graph_for(selected.unwrap())
+
+selection = Step(select_graph)
+graph = Graph.from_wiring((select_strategy.wire(), selection.wire(inputs={selection.action: (select_strategy,)})))
 ```
 
 这个能力用于先读取运行时结果，再选择下一层结构。父 Step 等待子图整体完成后才完成；
@@ -324,17 +305,16 @@ Step.condition 和 ConditionalEdge 只接受 RuntimeCondition。
 静态条件通过 `StaticConditions(evaluator=..., conditions=...)` 绑定节点或边，
 在编译阶段求值；直接构造与 DSL 写法见[条件 Step](./conditional_steps.md)。
 
-运行时条件使用 Step 对象声明读取依赖：
+运行时条件只声明判断函数，生产者引用放在目标步骤的接线中：
 
 ```python
 cache_miss = runtime_condition(
-    inputs=(cache_probe,),
     when=lambda result: not bool(result.unwrap()),
 )
 ```
 
-`inputs` 不是普通 prerequisite，但会阻塞条件求值，因此与 Graph edges 一起参与环检测，
-并在引用两端均已进入当前 wiring 后参与入口和出口计算。
+目标通过 `wire(inputs={condition: (cache_probe,)})` 声明结果绑定，产生明确的 ResultEdge，
+参与调度、环检测和接线边界计算。条件对象本身不保存生产者引用。
 
 ## `GraphExecution`
 
@@ -426,64 +406,40 @@ Rust 编译路径会把声明期已知子图转换为统一执行结构：
 
 ## 结果与运行上下文
 
-位置：
+`wire(after=(prepare,), inputs={consumer.action: (producer,)})` 区分纯执行前置和最终结果绑定。
+两者都在图的接线处声明；inputs 已包含等待关系，不必再把同一来源写进 after。
 
-- [src/rivetoo_graph/results.py](../../src/rivetoo_graph/results.py)
+Graph.from_wiring 把 inputs 归一化成
+`ResultEdge(source, target, argument_index, receiver)`。直接构造 Graph 时可以放入 edges；
+参数索引必须从零连续且不重复。输入顺序与重复来源均保留。
+inputs 的键是已有 LeafAction / RuntimeCondition 声明对象，按对象身份区分，
+不按内部函数或字段值比较。action、节点条件、每条条件边的条件分别接收自己的输入，
+条件函数不接收 ctx。同一对象在一次接线中复用时共享一组绑定；包装同一函数的不同
+条件对象可以分别绑定。不同接线及不同挂载之间独立。
 
-结果存储按 `StepId` 保存成功 Step 的返回值。声明 action 不直接使用 StepId，而是
-通过 Step 对象读取：
+键必须属于当前步骤或它的某条条件前置边；无关对象即使绑定空元组也会报错。
+不使用函数名查找，不增加端口包装类型。
+类型检查时可以保留具名 condition 变量，或先收窄 step.condition；无条件步骤的该字段为 None。
 
-```python
-def compile_action(run_ctx: StepRunContext) -> None:
-    source = run_ctx.require_value(prepare)
-    compile_source(source)
-```
+结果绑定到当前挂载；同一子图重复挂载时不会串读其它挂载的结果。
+运行时返回的 Graph 可以通过闭包捕获声明动作已经收到的参数，不再通过祖先引用查结果。
+预先声明的 Graph-valued Step 没有接收参数的 callable，其 inputs 用于条件判断。
+需要把运行期值带入子图时，使用接收结果参数、返回 Graph 的 Python action。
 
-`GraphResultStore` 是本次执行的结果写入端；同一 StepId 只能记录一次，不允许覆盖。
-执行状态的 `results`、action 上下文和 observation event 均只暴露 `GraphResultView`，
-提供 `get/require/has`，没有 `record`。这些入口共享同一个实时视图，不会为每个 Step
-复制结果表。`GraphExecutionState.snapshot()` 则复制当时的记录，并以只读视图公开。
+GraphResultStore 按 StepId 将成功结果登记一次，包装为 Some(value)。
+显式结果边在生产者执行前自动开启记录。
+Nothing() 表示生产者已终态但没有结果，例如被跳过；
+Some(None) 表示正常执行并返回 None。生产者失败会阻断消费者，不转换成 Nothing。
+输入来源被静态裁剪时编译报错，不静默传入缺失值。
 
-成功结果统一包装为 `Some(value)`；`get` 和上下文 `result` 在缺失时仍返回 None，
-`require` 则报错。运行时条件不再查询上下文，而是按
-`Option = Some | Nothing` 接收[结果输入](./conditional_steps.md#结果输入)。
-inputs 会自动开启结果记录；仅在 action 中查询结果时，仍须配置 GraphResultStore。
+执行状态和观察器公开 GraphResultView，只提供 get/require/has，不提供 record。
+快照复制当时的记录，但值本身不深拷贝、不冻结。发布后的值应视为不可变；
+需要共同修改的数据使用显式共享状态。
 
-只读限制针对结果表，不是对返回对象的深度冻结：返回值仍是原对象，不应在发布结果后
-继续修改其中的可变内容。需要共同修改的数据使用独立的共享状态，不改写步骤结果。
-
-同级引用直接传 Step。跨到祖先图时使用：
-
-```python
-ParentGraphStepRef(
-    step=outer_prepare,
-    levels_up=1,
-)
-```
-
-不支持字符串引用，也不会自动向最近祖先搜索。
-
-`StepRunContext` 把只读视图和运行控制组合在同一个 action 入口：
-
-- `view: StepReadContext`
-- `control: StepControl`
-- `step_log_path`
-
-常用只读 API：
-
-- `result(step)` / `require_result(step)`
-- `value(step)` / `require_value(step)`
-- `has_result(step)`
-- `step_id`
-- `label_path`
-- `graph_label_path`
-
-副作用控制统一位于 `run_ctx.control`：
-
-- `skip_step(step_id)`
-- `skip_steps(step_ids)`
-- `stop_requested()`：读取当前执行作用域是否已请求停止
-- `require_running()`：已请求停止时抛出 `GraphExecutionStopped`
+StepRunContext 只提供 step_id、label_path、graph_label_path、step_log_path、
+control 和 shared(Type)。不再提供结果查询、结果视图或作用域索引绕行入口。
+StepReadContext 与祖先结果引用已移除；执行外部的
+GraphExecution.require_result 仍可用于查看结果。
 
 长任务应在自己的循环和外部调用之间协作检查停止状态：
 
@@ -553,7 +509,7 @@ assert progress.completed == 2
 对象的锁、资源释放和使用寿命由调用方负责；多种共享能力可以组合进一个有类型的
 对象。多次执行若需要隔离，应分别构造共享对象；显式复用同一实例就表示共享。
 共享状态不产生调度依赖，读取若必须等待写入完成，仍须声明边。动态条件只接收只读
-结果上下文，不会因此获得共享状态。此接口不把 Python 对象投影给 Rust 原生 action。
+Option 参数，不会因此获得共享状态。此接口不把 Python 对象投影给 Rust 原生 action。
 
 ## Observation 与执行状态
 

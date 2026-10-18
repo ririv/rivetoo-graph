@@ -12,19 +12,23 @@ from .state import GraphExecutionState
 if TYPE_CHECKING:
     from ..model import LeafAction
     from ..observe import GraphObserver
+    from ..option import Option
     from ..results import StepRunContext
     from .control import GraphExecutionControl
     from .run import ExecutableGraph
 
 
 def _invoke_thread_action(
-    action: LeafAction, ctx: StepRunContext, action_log: GraphActionLog
+    action: LeafAction,
+    ctx: StepRunContext,
+    action_log: GraphActionLog,
+    inputs: tuple[Option[object], ...] = (),
 ) -> object:
     thread = threading.current_thread()
     original_name = thread.name
     thread.name = step_thread_name(ctx.label_path)
     try:
-        return invoke_sync_action(action, ctx, action_log)
+        return invoke_sync_action(action, ctx, action_log, inputs)
     finally:
         thread.name = original_name
 

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
     from ..model import LeafAction
     from ..observe import GraphObserver
+    from ..option import Option
     from ..results import StepRunContext
     from .control import GraphExecutionControl
     from .run import ExecutableGraph
@@ -23,6 +24,7 @@ async def _invoke_async_step_action(
     action: LeafAction,
     run_ctx: StepRunContext,
     action_log: GraphActionLog,
+    inputs: tuple[Option[object], ...] = (),
 ) -> object:
     """在 async runtime 中执行 action，同时避免同步函数阻塞事件循环。
 
@@ -34,9 +36,9 @@ async def _invoke_async_step_action(
 
     async def _invoke() -> object:
         if inspect.iscoroutinefunction(action.fn):
-            result = action.invoke(run_ctx)
+            result = action.invoke(run_ctx, inputs)
         else:
-            result = await asyncio.to_thread(action.invoke, run_ctx)
+            result = await asyncio.to_thread(action.invoke, run_ctx, inputs)
         if inspect.isawaitable(result):
             return await cast("Awaitable[object]", result)
         return result

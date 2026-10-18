@@ -18,6 +18,7 @@ struct PythonTypes<'py> {
     conditional_edge: Bound<'py, PyAny>,
     capability_binding: Bound<'py, PyAny>,
     runtime_condition: Bound<'py, PyAny>,
+    result_edge: Bound<'py, PyAny>,
 }
 
 impl<'py> PythonTypes<'py> {
@@ -29,6 +30,7 @@ impl<'py> PythonTypes<'py> {
             conditional_edge: model.getattr("ConditionalEdge")?,
             capability_binding: capability.getattr("CapabilityBinding")?,
             runtime_condition: model.getattr("RuntimeCondition")?,
+            result_edge: model.getattr("ResultEdge")?,
         })
     }
 }
@@ -49,6 +51,8 @@ struct NodeRecord {
     child_graph: Option<usize>,
     step_id: Vec<usize>,
     label: String,
+    inputs: Vec<usize>,
+    condition_inputs: HashMap<usize, Vec<usize>>,
 }
 
 enum NodeAction {
@@ -212,6 +216,8 @@ impl<'py> Collector<'py> {
                 child_graph: None,
                 step_id: step_id.clone(),
                 label: step_label.clone(),
+                inputs: Vec::new(),
+                condition_inputs: HashMap::new(),
             });
             let activation = if active {
                 NodeActivation::Active {
@@ -238,6 +244,7 @@ impl<'py> Collector<'py> {
             )?;
         }
 
+        self.collect_result_inputs(source_graph, graph_index, parent_active)?;
         self.collect_node_conditions(graph_index, parent_active)?;
         self.collect_edges(source_graph, graph_index, parent_active)?;
         Ok(graph_index)
@@ -319,6 +326,8 @@ impl<'py> Collector<'py> {
                 child_graph: None,
                 step_id,
                 label: native_step.label().to_owned(),
+                inputs: Vec::new(),
+                condition_inputs: HashMap::new(),
             });
             let activation = if parent_active {
                 NodeActivation::Active {
@@ -371,7 +380,7 @@ impl<'py> Collector<'py> {
             let step = source_step.bind(self.py).clone();
             let condition = step.getattr("condition")?;
             if condition.is_instance(&self.types.runtime_condition)? {
-                let condition = self.register_runtime_condition(&condition, graph_index)?;
+                let condition = self.register_runtime_condition(&condition, node_index)?;
                 self.set_node_condition(node_index, condition);
             } else if !condition.is_none() {
                 return Err(PyValueError::new_err("unsupported graph step condition"));
@@ -402,7 +411,16 @@ impl<'py> Collector<'py> {
             if !graph_active || matches!(self.node_activation(target), NodeActivation::Inactive) {
                 continue;
             }
-            if has_static_bindings {
+            if edge.is_instance(&self.types.result_edge)?
+                && edge
+                    .getattr("receiver")?
+                    .is_instance(&self.types.runtime_condition)?
+            {
+                // 条件输入由 RuntimeCondition.reads 调度，不成为 action 的无条件前置边。
+                continue;
+            }
+            // 结果边已在 collect_result_inputs 中求值并校验，避免重复调用求值器。
+            if has_static_bindings && !edge.is_instance(&self.types.result_edge)? {
                 let binding = static_bindings.call_method1("get", ((source_step, target_step),))?;
                 if !binding.is_none() && !binding.call_method0("evaluate")?.extract::<bool>()? {
                     continue;
@@ -413,7 +431,7 @@ impl<'py> Collector<'py> {
                 if condition.is_instance(&self.types.runtime_condition)? {
                     DeclarationPrerequisite::RuntimeConditional {
                         node: NodeId::new(source),
-                        condition: self.register_runtime_condition(&condition, graph_index)?,
+                        condition: self.register_runtime_condition(&condition, target)?,
                     }
                 } else {
                     return Err(PyValueError::new_err("unsupported graph edge condition"));
@@ -461,12 +479,16 @@ impl<'py> Collector<'py> {
     fn register_runtime_condition(
         &mut self,
         condition: &Bound<'py, PyAny>,
-        graph_index: usize,
+        target: usize,
     ) -> PyResult<ConditionId> {
-        let mut reads = Vec::new();
-        for read in condition.getattr("inputs")?.try_iter()? {
-            reads.push(NodeId::new(self.require_local_node(graph_index, &read?)?));
-        }
+        let reads: Vec<_> = self.nodes[target]
+            .condition_inputs
+            .get(&object_key(condition))
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(NodeId::new)
+            .collect();
         let condition_id = ConditionId::new(self.conditions.len());
         self.conditions.push(ConditionRecord {
             predicate: condition.getattr("when")?.unbind(),
@@ -474,6 +496,52 @@ impl<'py> Collector<'py> {
         });
         self.runtime_conditions.push(RuntimeCondition::new(reads));
         Ok(condition_id)
+    }
+
+    fn collect_result_inputs(
+        &mut self,
+        graph: &Bound<'py, PyAny>,
+        graph_index: usize,
+        active: bool,
+    ) -> PyResult<()> {
+        // O(E + I)：结果边既提供调度约束，也提供稳定的位置参数绑定。
+        let bindings = graph.getattr("_static_bindings")?;
+        for edge in graph.getattr("edges")?.try_iter()? {
+            let edge = edge?;
+            if !edge.is_instance(&self.types.result_edge)? {
+                continue;
+            }
+            let source_step = edge.getattr("source")?;
+            let target_step = edge.getattr("target")?;
+            let source = self.require_local_node(graph_index, &source_step)?;
+            let target = self.require_local_node(graph_index, &target_step)?;
+            if !active || matches!(self.node_activation(target), NodeActivation::Inactive) {
+                continue;
+            }
+            let binding = bindings.call_method1("get", ((source_step, target_step),))?;
+            if matches!(self.node_activation(source), NodeActivation::Inactive)
+                || (!binding.is_none() && !binding.call_method0("evaluate")?.extract::<bool>()?)
+            {
+                return Err(PyValueError::new_err(
+                    "result input was removed by static conditions",
+                ));
+            }
+            let index: usize = edge.getattr("argument_index")?.extract()?;
+            let receiver = edge.getattr("receiver")?;
+            let inputs = if receiver.is_instance(&self.types.runtime_condition)? {
+                self.nodes[target]
+                    .condition_inputs
+                    .entry(object_key(&receiver))
+                    .or_default()
+            } else {
+                &mut self.nodes[target].inputs
+            };
+            if inputs.len() <= index {
+                inputs.resize(index + 1, usize::MAX);
+            }
+            inputs[index] = source;
+        }
+        Ok(())
     }
 
     fn require_local_node(&self, graph_index: usize, step: &Bound<'py, PyAny>) -> PyResult<usize> {
@@ -715,6 +783,13 @@ impl NativeDeclarationCompilation {
         self.declaration_conditions
             .iter()
             .map(|&index| self.conditions[index].reads.clone())
+            .collect()
+    }
+
+    fn node_inputs(&self) -> Vec<Vec<usize>> {
+        self.declaration_nodes
+            .iter()
+            .map(|&index| self.nodes[index].inputs.clone())
             .collect()
     }
 }

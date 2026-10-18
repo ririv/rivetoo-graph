@@ -92,7 +92,7 @@ class GraphExecutionState:
                 self._events.paths.update(paths)
 
     def _enable_results(self) -> None:
-        """Enable recording before executing a graph with condition inputs."""
+        """Enable recording before executing a graph with result edges."""
         from ..results import GraphResultStore
 
         with self._lock:

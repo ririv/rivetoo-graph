@@ -15,7 +15,6 @@ from rivetoo_graph import (
     Step,
     StepControl,
     StepId,
-    StepReadContext,
     StepRunContext,
     ThreadGraphRunOptions,
 )
@@ -78,7 +77,8 @@ def test_shared_object_reaches_parallel_and_nested_actions(
 
 def test_shared_type_check_is_an_explicit_boundary() -> None:
     context = StepRunContext(
-        view=StepReadContext(step_id=StepId((0,)), label_path=(), graph_step_ids={}),
+        step_id=StepId((0,)),
+        label_path=(),
         control=StepControl(StepId((0,)), GraphExecutionState()),
         step_log_path=None,
         _shared=Progress(),
@@ -90,7 +90,8 @@ def test_shared_type_check_is_an_explicit_boundary() -> None:
 
 def test_missing_shared_state_is_not_created_implicitly() -> None:
     context = StepRunContext(
-        view=StepReadContext(step_id=StepId((0,)), label_path=(), graph_step_ids={}),
+        step_id=StepId((0,)),
+        label_path=(),
         control=StepControl(StepId((0,)), GraphExecutionState()),
         step_log_path=None,
     )

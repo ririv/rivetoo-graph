@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from ..compile import CompiledLeaf, CompiledNativeStep, CompiledStep, GraphCompilation
 from ..errors import GraphError
-from ..results import GraphScope, StepControl, StepReadContext, StepRunContext
+from ..results import GraphScope, StepControl, StepRunContext
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -47,7 +47,7 @@ type ExecutableGraph = GraphCompilation
 
 @dataclass(frozen=True, slots=True)
 class RuntimeStep:
-    """当前可执行 step 及其声明图结果读取作用域。"""
+    """当前可执行 step 及其内部挂载作用域。"""
 
     step: CompiledStep
     label_path: StepLabelPath
@@ -59,8 +59,8 @@ class RuntimeStep:
 class CompiledGraphRun:
     """使用编译路径和原始声明作用域执行 `GraphCompilation` 的视图。
 
-    编译节点使用全局编码 id 调度，但 action 读取结果时仍应看到声明图
-    中的局部 step id。该适配器通过 `CompiledStepContext` 恢复两者映射。
+    编译节点使用全局编码 id 调度；声明作用域只供观察和动态子图物化使用，
+    不再作为 action 查询任意步骤结果的入口。
     """
 
     compilation: GraphCompilation
@@ -98,13 +98,8 @@ class CompiledGraphRun:
         context = step.context
         step_log_path = self.step_log_path_for(state, step)
         return StepRunContext(
-            view=StepReadContext(
-                step_id=step.id,
-                label_path=context.label_path,
-                graph_step_ids=context.graph_step_ids,
-                ancestor_graph_scopes=context.ancestor_graph_scopes,
-                results=state.results,
-            ),
+            step_id=step.id,
+            label_path=context.label_path,
             control=StepControl(
                 step_id=step.id,
                 _state=state,

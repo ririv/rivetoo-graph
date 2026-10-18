@@ -49,9 +49,8 @@ is displayed as `<unlabeled>`; an unlabeled nested graph uses its mounting Step'
 label. An explicit Graph label takes precedence.
 
 Explicit wiring lives in `Graph.edges`. A normalized Graph does not accept
-StepWiring objects, and Step does not store `after`. Runtime-condition `inputs`
-are another explicit source of blocking relations and participate in validation
-and scheduling.
+StepWiring objects, and Step does not store `after` or `inputs`. ResultEdge carries
+the data bindings; there is no second source of dependency topology in conditions.
 
 ## Step
 
@@ -78,12 +77,12 @@ Callables are normalized to `LeafAction`. The three action forms are:
 
 Duplicate labels are legal. Declaration identity is the Step object itself.
 The same Step cannot be mounted twice in one Graph, but can be reused in separate
-Graphs with different wiring. Ordinary edges and condition inputs cannot reference
+Graphs with different wiring. Ordinary edges and result inputs cannot reference
 steps outside their graph; cross-subgraph synchronization uses capability ports.
 
 ## Identity and presentation
 
-- Step references identify declarations for wiring, condition inputs, and results.
+- Step references identify declarations for ordering and result wiring.
 - `StepId` identifies one mounted position, such as `0`, `1`, or `1.0`.
   Compilation, scheduling, and result storage use this identity.
 - Step and Graph labels are only presentation.
@@ -94,7 +93,7 @@ therefore need no fabricated stable label.
 ## Edges and wiring
 
 ```python
-type GraphEdge = UnconditionalEdge | ConditionalEdge | CapabilityBinding
+type GraphEdge = UnconditionalEdge | ConditionalEdge | CapabilityBinding | ResultEdge
 ```
 
 Ordinary and conditional edges reference actual Step objects:
@@ -193,39 +192,40 @@ inside an already declared graph.
 
 ## LeafAction
 
-LeafAction accepts callables invokable in one of two ways:
+Without result inputs, LeafAction calls `fn()` or `fn(ctx)`. If both forms
+are valid, the zero-argument form wins, preserving default-value closures.
+
+With `wire(inputs={consumer.action: (producer, ...)})`, the call is always
+`fn(ctx, first_result, ...)`. Each result is an `Option[object]`; graph
+construction validates the complete signature. An annotation never selects a
+different calling convention.
 
 ```python
-Callable[[], object]
-Callable[[StepRunContext], object]
+def compile_action(ctx: StepRunContext, source: Option[object]) -> None:
+    ctx.control.require_running()
+    compile_source(source.unwrap())
+
+prepare = Step(prepare_source)
+compile_step = Step(compile_action)
+graph = Graph.from_wiring((
+    prepare.wire(),
+    compile_step.wire(inputs={compile_step.action: (prepare,)}),
+))
 ```
 
-It inspects the signature at construction and fixes the calling convention:
-`fn()` or `fn(run_ctx)`. Business arguments belong in a closure:
-
-```python
-Step(lambda: generate_pkg_config_file(layout, version), label="pkgconfig")
-Step(
-    lambda run_ctx: compile_source(compiler, run_ctx.require_value(prepare)),
-    label="compile",
-)
-```
-
-If a callable supports both forms, the zero-argument form wins. Default captures
-such as `lambda value=value: ...` are not overwritten with a runtime context.
-
-The `step(action)` helper derives labels from named functions, LeafAction
-functions, or Graph labels. Lambdas and anonymous callables remain unlabeled.
-It neither binds business arguments nor introduces a second execution protocol.
+The `step(action)` helper derives labels from named functions or Graph labels.
+It does not bind business arguments or introduce a second execution protocol.
 
 ## Returning a graph at runtime
 
 A leaf action may return a Graph after inspecting runtime results:
 
 ```python
-def select_graph(run_ctx: StepRunContext) -> Graph:
-    selected = run_ctx.require_value(select_strategy)
-    return graph_for(selected)
+def select_graph(ctx: StepRunContext, selected: Option[object]) -> Graph:
+    return graph_for(selected.unwrap())
+
+selection = Step(select_graph)
+graph = Graph.from_wiring((select_strategy.wire(), selection.wire(inputs={selection.action: (select_strategy,)})))
 ```
 
 The returned graph is compiled into a nested session managed by the same execution
@@ -248,14 +248,13 @@ RuntimeCondition is evaluated during execution.
 
 ```python
 cache_miss = runtime_condition(
-    inputs=(cache_probe,),
     when=lambda result: not bool(result.unwrap()),
 )
 ```
 
-`inputs` blocks condition evaluation. It participates in cycle detection and in
-wiring-boundary calculation once both endpoints are present, even though it is
-not an ordinary prerequisite.
+The target's `wire(inputs={condition: (cache_probe,)})` binds the predicate arguments and
+action parameters. Result edges participate in cycle detection, scheduling and
+wiring boundaries. The condition itself carries no producer references.
 
 ## GraphExecution
 
@@ -316,44 +315,50 @@ share identities and declaration-scope mappings, so result lookup is consistent.
 
 ## Results and runtime context
 
-[results.py](../src/rivetoo_graph/results.py) stores successful return values by
-StepId. Actions use declaration references:
+`wire(after=(prepare,), inputs={consumer.action: (producer,)})` separates ordering-only prerequisites
+from final-result bindings. Both are explicit graph relations. An input already
+includes its waiting requirement; do not repeat it in after.
 
-```python
-def compile_action(run_ctx: StepRunContext) -> None:
-    source = run_ctx.require_value(prepare)
-    compile_source(source)
-```
+Graph.from_wiring lowers inputs to `ResultEdge(source, target, argument_index, receiver)`.
+Direct Graph construction accepts these edges in `edges`; argument indexes
+must be unique and contiguous from zero. Input order and repeated sources are
+preserved per receiver. The inputs mapping keys are existing LeafAction and
+RuntimeCondition declaration objects, compared by identity, not by their callable
+or field values. Each action, node condition and conditional-edge condition receives
+only its own tuple. Conditions have no ctx parameter.
 
-`GraphResultStore` is the write side of one execution's result records. Each StepId
-can be recorded only once. Execution state, action contexts, and observation events
-expose a concrete `GraphResultView` with `get/require/has`, without `record`. They
-share one live view rather than copying the table for each Step. A state snapshot
-copies the records and exposes a read-only view of that copy.
+The same receiver object reused within one wiring shares one input tuple. Separate
+condition objects wrapping the same callable can bind different tuples. Bindings in
+different wirings and graph mounts are independent. A key must belong to the target
+step or one of its conditional prerequisites; unrelated receivers are rejected,
+including empty bindings. No function-name lookup or extra port wrapper is involved.
 
-Successful results use `Some(value)`; `get` and context `result` return None when
-absent, while `require` raises. Runtime conditions use the explicit
-`Option = Some | Nothing` input contract instead of querying the context; see
-[result inputs](./conditional_steps.md#result-inputs). Inputs enable result recording
-automatically; action-only result queries still require a configured GraphResultStore.
+For type checking, retain a named condition variable, or narrow step.condition
+before using it as a key: the field may be None on an unconditional Step.
 
-Read-only access applies to the table, not to the returned objects: values are not
-deep-copied or frozen. Treat published results as immutable; use separate shared
-state for data that actions intentionally modify together.
+Results are bound to the current mount. A reused subgraph does not read results
+from a different mount. A runtime-returned graph can capture the values already
+passed to its declaring action. There is no ancestor-result lookup API.
+A predeclared Graph-valued Step has no callable to receive parameters: its inputs
+are consumed by its conditions. Use a Python action returning a Graph to pass
+runtime values into a newly declared child graph.
 
-Use a Step for a sibling and an explicit ancestor reference for an outer graph:
+`GraphResultStore` records each successful StepId once as `Some(value)`.
+Explicit result edges enable recording before producers run. `Nothing()` means
+a terminal producer has no result, for example because it was skipped;
+`Some(None)` means it successfully returned None. Producer failure blocks the
+consumer; it is not converted into Nothing. Static removal of an input is a
+compilation error.
 
-```python
-ParentGraphStepRef(step=outer_prepare, levels_up=1)
-```
+Execution state and observers expose a `GraphResultView` with get/require/has,
+not record. Snapshots copy the records. Values themselves are not deep-copied or
+frozen. Treat published values as immutable; use explicit shared state for
+intentional mutation.
 
-There are no string references or implicit searches for the nearest ancestor.
-
-StepRunContext combines `view: StepReadContext`, `control: StepControl`, and
-`step_log_path`. Read APIs include `result/require_result`,
-`value/require_value`, `has_result`, `step_id`, `label_path`, and
-`graph_label_path`. Side-effectful skipping goes through
-`run_ctx.control.skip_step(step_id)` or `skip_steps(step_ids)`.
+StepRunContext exposes step_id, label_path, graph_label_path, step_log_path,
+control and shared(Type). It has no result lookup methods, result view or
+scope-index escape hatch. StepReadContext and ancestor result references are
+removed. External result inspection through GraphExecution.require_result remains.
 
 Long-running actions can call `ctx.control.stop_requested()` or
 `ctx.control.require_running()` between iterations and external calls:

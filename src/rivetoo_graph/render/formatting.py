@@ -20,6 +20,7 @@ from ..model import (
     ConditionalPrerequisite,
     Graph,
     GraphEdge,
+    ResultEdge,
     RuntimeCondition,
     Step,
     StepId,
@@ -133,7 +134,18 @@ def format_graph_edge(
         dep_id += f" (static: {format_static_condition(binding.condition)})"
     if isinstance(edge, ConditionalEdge):
         return f"{dep_id} (条件边: {condition_name(edge.condition)})"
+    if isinstance(edge, ResultEdge):
+        return f"{dep_id} ({result_receiver_label(edge)} input: {edge.argument_index})"
     return dep_id
+
+
+def result_receiver_label(edge: ResultEdge) -> str:
+    if edge.receiver is edge.target.action:
+        return "action"
+    if edge.receiver is edge.target.condition:
+        return "condition"
+    assert isinstance(edge.receiver, RuntimeCondition)
+    return f"edge condition {condition_name(edge.receiver)}"
 
 
 def render_step_path(path: tuple[str, ...]) -> str:
